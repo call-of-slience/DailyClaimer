@@ -71,32 +71,37 @@ Go 版本：$GOVER
 启动：./start.sh        前台运行
       ./start.sh -d     后台运行（日志 chinacpa.log）
       systemctl 托管见 chinacpa.service（改好路径后放到 /etc/systemd/system/）
-面板：http://127.0.0.1:8313/    密码见 config.json 的 panel_password
-监听：默认仅本机（127.0.0.1:8313）；要让同网段设备访问，把 listen 改成 :8313
+面板：本机 http://127.0.0.1:8313/    局域网 http://<服务器IP>:8313/
+监听：0.0.0.0:8313（所有网卡）。只想本机访问时改成 127.0.0.1:8313
       并务必先改掉 panel_password
 数据：./data（首次启动自动创建，包含账号与日志，请勿外传）
 
 依赖：无。纯静态二进制，glibc/musl 均可运行；豆包浏览器签到需要本机装 Chrome/Chromium。
 
 安全提示：
-  config.json 的 panel_password 请改掉；listen 建议改成 127.0.0.1:8313 只监听本机；
-  api_key 是网关调用密钥，默认值务必替换。
+  config.json 的 panel_password / api_key 请改掉；暴露到局域网等于把账号 Cookie 交出去；
+  只要本机访问，把 listen 改成 127.0.0.1:8313。
 EOF
   chmod 755 "$archdir/chinacpa" "$archdir/start.sh"
 done
 
 echo "[4/5] 打包"
-# 发行版默认只监听本机：面板口令是默认值，暴露到局域网等于把账号 Cookie 交出去
+# Windows 默认只听本机；Linux 听 0.0.0.0，方便同网段访问。口令仍是默认值，务必先改。
 "$PY" - <<'PY'
 import json, os
-for d in ("build/win", "build/linux-amd64", "build/linux-arm64"):
+listen_by_dir = {
+    "build/win": "127.0.0.1:8313",
+    "build/linux-amd64": "0.0.0.0:8313",
+    "build/linux-arm64": "0.0.0.0:8313",
+}
+for d, listen in listen_by_dir.items():
     p = os.path.join(d, "config.json")
     cfg = json.load(open(p, encoding="utf-8"))
-    cfg["listen"] = "127.0.0.1:8313"
+    cfg["listen"] = listen
     with open(p, "w", encoding="utf-8", newline="\n") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
         f.write("\n")
-print("  · config.json 已收敛为 127.0.0.1:8313")
+    print("  · %s listen=%s" % (d, listen))
 PY
 
 ABS_DIST="$(cd dist && pwd)"

@@ -80,7 +80,7 @@ go build -o chinacpa.exe ./cmd/chinacpa
 | `ChinaCPA-linux-arm64.tar.gz` | Linux ARM64（ARM 服务器 / 群晖 / 树莓派） | 同上 |
 
 - 静态单文件，目标机不需要装 Go，也不依赖 libc（glibc / musl 都能跑）。
-- 发行包内 `config.json` 默认 `"listen": "127.0.0.1:8313"`（只监听本机）。要给同网段设备访问，改成 `":8313"`，并务必先改掉 `panel_password`。
+- Windows 发行包默认 `"listen": "127.0.0.1:8313"`（只监听本机）。Linux 发行包默认 `"listen": "0.0.0.0:8313"`（所有网卡，同网段可访问）；只要本机访问改成 `127.0.0.1:8313`。务必先改掉 `panel_password`。
 - Linux 后台常驻两种方式：`./start.sh -d`（日志写 `chinacpa.log`）；或改好 `chinacpa.service` 里的路径后 `cp chinacpa.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now chinacpa`。
 - 豆包「浏览器签到 / 窗口扫码登录」需要目标机装了 Chrome / Chromium（`/usr/bin/google-chrome`、`/usr/bin/chromium` 会自动探测，也可在 `doubao.chrome_path` 指定）；纯接口能力不需要浏览器。
 - **单实例**：同一 `data` 目录只允许一个进程。启动时先抢监听端口，重复启动会直接中文提示「端口已被占用（PID xxx）」并退出，
@@ -532,7 +532,7 @@ internal/
 | `start.bat` | 改为**先结束旧进程 → 每次都重新编译 → 无 Go 时才用现有 exe**；端口占用给中文提示（旧版只在 exe 缺失时编译，导致改了代码跑的还是旧进程） |
 | 打包（`build_dist.sh`） | 一次交叉编译三平台，产出 `dist/` 下 zip + 两个 tar.gz + `SHA256SUMS.txt`；`CGO_ENABLED=0 -trimpath -ldflags "-s -w"` 得纯静态单文件；用 Python `tarfile` / `zipfile` 显式写权限位（Windows 上 `chmod` 不落盘） |
 | Linux 运行（`packaging/`） | `start.sh`（前台 / `-d` 后台，面板密码从 config 读而不是写死）+ `chinacpa.service`（systemd 单元） |
-| 打包默认配置 | 发行包内 `listen` 收敛为 `127.0.0.1:8313`，避免默认口令 + 默认密钥直接暴露到局域网 |
+| 打包默认配置 | Windows 发行包 `listen` 为 `127.0.0.1:8313`；Linux 为 `0.0.0.0:8313`（局域网可访问，务必先改 `panel_password`） |
 | 推送与审计 | 新增 `internal/notify/`（多渠道路由、一次结算一条汇总）与 bbolt 请求审计聚合 |
 | 后台预算 | 任务中心独立预算 100s → 300s，面板成长任务请求 4 → 8 分钟（真实对话链会超过旧超时被截断） |
 

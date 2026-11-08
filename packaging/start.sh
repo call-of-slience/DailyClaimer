@@ -12,13 +12,14 @@ if [ ! -f config.json ]; then
   echo "· 未找到 config.json，将使用内置默认配置（面板里改完会自动写回）"
 fi
 
-# listen 可能是 ":8313" 或 "127.0.0.1:8313"，端口取最后一个冒号后面；
+# listen 可能是 ":8313"、"127.0.0.1:8313" 或 "0.0.0.0:8313"，端口取最后一个冒号后面；
 # 不能 grep 所有数字再取第一个，否则会把 127.0.0.1 的 127 当成端口。
 LISTEN=$(grep -o '"listen"[[:space:]]*:[[:space:]]*"[^"]*"' config.json 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/' | head -1)
 PORT=${LISTEN##*:}
 PORT=${PORT:-8313}
 PASS=$(grep -o '"panel_password"[[:space:]]*:[[:space:]]*"[^"]*"' config.json 2>/dev/null | sed 's/.*:[[:space:]]*"//;s/"$//')
-echo "· 面板地址 http://127.0.0.1:${PORT}/    面板密码 ${PASS:-123456}（在 config.json 的 panel_password 修改）"
+echo "· 本机面板 http://127.0.0.1:${PORT}/    面板密码 ${PASS:-123456}（在 config.json 的 panel_password 修改）"
+echo "· 局域网请用 http://<本机IP>:${PORT}/   当前 listen=${LISTEN:-0.0.0.0:8313}"
 echo "· 数据目录 ./data   首次启动会自动创建"
 echo
 
