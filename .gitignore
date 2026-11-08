@@ -6,6 +6,8 @@ dist/
 models.json
 *.exe~
 *.zip
+*.tar.gz
+build/
 
 # 本地归档：历史 exe、数据目录备份、调试截图、设计素材
 backup/
@@ -16,3 +18,7 @@ rail.json
 
 # rail-rs（Rust 浮动栏）构建产物
 rail-rs/target/
+
+# 测试不进仓库
+*_test.go
+测试指南.md

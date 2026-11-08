@@ -715,15 +715,42 @@ func (p *Provider) Checkin(ctx context.Context, a *model.Account) (*model.Checki
 
 // ── 任务中心（自动接受 + 领奖） ───────────────────────────
 
+// growthTask 任务中心的一条任务。
+//
+// 进度在 **progress 子对象**里（{"progress":{"current":1,"target":1}}），
+// 不是平铺的 current/target —— 早期版本按平铺解析，结果每条任务 target 都是 0，
+// 判定「无进度型任务」，于是永远不领奖，积分卡在原地。平铺字段保留为兼容位，
+// listTasks 会做归一化。
 type growthTask struct {
-	TaskCode     string `json:"task_code"`
-	Title        string `json:"title"`
-	Credit       int64  `json:"reward_credit"`
-	Energy       int64  `json:"reward_energy"`
-	Target       int64  `json:"target"`
-	Current      int64  `json:"current"`
-	AcceptStatus string `json:"accept_status"`
-	Status       string `json:"status"`
+	TaskCode     string       `json:"task_code"`
+	Title        string       `json:"title"`
+	Credit       int64        `json:"reward_credit"`
+	Energy       int64        `json:"reward_energy"`
+	AcceptStatus string       `json:"accept_status"`
+	Status       string       `json:"status"`
+	Locked       bool         `json:"locked"`
+	Progress     taskProgress `json:"progress"`
+	// JumpURL 任务的跳转地址。具名专家类任务（体验「××专家」）的 jump_url 里
+	// 带 expertId=ex_xxx，直接给出要召唤的专家，比自己猜关键词可靠得多。
+	JumpURL string `json:"jump_url"`
+	Desc    string `json:"task_desc"`
+	// 兼容：少数接口/版本直接下发平铺字段
+	Current int64 `json:"current"`
+	Target  int64 `json:"target"`
+}
+
+// taskProgress 进度子对象。
+type taskProgress struct {
+	Current int64 `json:"current"`
+	Target  int64 `json:"target"`
+}
+
+// normalize 把 progress 子对象摊到平铺字段上（保留已有平铺值）。
+func (t *growthTask) normalize() {
+	if t.Progress.Target > 0 {
+		t.Target = t.Progress.Target
+		t.Current = t.Progress.Current
+	}
 }
 
 func (p *Provider) growthJSON(ctx context.Context, a *model.Account, method, path string, body any, mp bool) (json.RawMessage, error) {
@@ -746,42 +773,6 @@ func (p *Provider) growthJSON(ctx context.Context, a *model.Account, method, pat
 	return p.doJSON(req)
 }
 
-// RunTasks 自动完成任务中心：列表（默认+小程序口径合并）→ 接受全部未接受 → 领取达标奖励。
-// 返回 (获得的积分, 摘要)。
-func (p *Provider) RunTasks(ctx context.Context, a *model.Account) (int64, string, error) {
-	tasks, err := p.listTasks(ctx, a)
-	if err != nil {
-		return 0, "", err
-	}
-	var toAccept []string
-	var earned int64
-	var parts []string
-	for _, t := range tasks {
-		if t.AcceptStatus == "not_accepted" || t.AcceptStatus == "" {
-			toAccept = append(toAccept, t.TaskCode)
-		}
-	}
-	if len(toAccept) > 0 {
-		_, _ = p.growthJSON(ctx, a, http.MethodPost, "/v2/activity/growth/tasks/accept", map[string]any{"task_codes": toAccept}, false)
-		parts = append(parts, fmt.Sprintf("接受 %d 个任务", len(toAccept)))
-	}
-	for _, t := range tasks {
-		claimable := (t.Status == "complete" || t.Current >= t.Target) && t.AcceptStatus != "claimed" && t.Target > 0
-		if !claimable {
-			continue
-		}
-		credit, _, cerr := p.claimReward(ctx, a, t.TaskCode)
-		if cerr == nil && credit > 0 {
-			earned += credit
-			parts = append(parts, fmt.Sprintf("%s +%d", t.Title, credit))
-		}
-	}
-	if len(parts) == 0 {
-		parts = append(parts, "暂无可自动完成的任务")
-	}
-	return earned, strings.Join(parts, "；"), nil
-}
-
 func (p *Provider) listTasks(ctx context.Context, a *model.Account) ([]growthTask, error) {
 	seen := map[string]bool{}
 	var out []growthTask
@@ -798,6 +789,7 @@ func (p *Provider) listTasks(ctx context.Context, a *model.Account) ([]growthTas
 		}
 		for _, t := range resp.Tasks {
 			if t.TaskCode != "" && !seen[t.TaskCode] {
+				t.normalize()
 				seen[t.TaskCode] = true
 				out = append(out, t)
 			}
@@ -806,40 +798,53 @@ func (p *Provider) listTasks(ctx context.Context, a *model.Account) ([]growthTas
 	return out, nil
 }
 
-func (p *Provider) claimReward(ctx context.Context, a *model.Account, taskCode string) (credit, energy int64, err error) {
-	// chat 域领奖
+// claimReward 领奖。mp=true 时与列表/接受同口径（带小程序头），
+// 否则上游按默认口径找不到该任务。
+//
+// 路径做两级兜底：v2 → 无 v2 前缀 → web 域。上游对领奖端点做过一次路径迁移，
+// 只写死一条会在迁移期整批失败。
+func (p *Provider) claimReward(ctx context.Context, a *model.Account, taskCode string, mp bool) (credit, energy int64, err error) {
+	paths := []string{
+		"/v2/activity/growth/tasks/" + taskCode + "/claim",
+		"/activity/growth/tasks/" + taskCode + "/claim",
+	}
+	for _, path := range paths {
+		data, e := p.growthJSON(ctx, a, http.MethodPost, path, nil, mp)
+		if e == nil {
+			if c, en := parseClaimReward(data); c > 0 || en > 0 {
+				return c, en, nil
+			}
+			// 200 但没奖励：通常是已领过，按成功处理（幂等）
+			return 0, 0, nil
+		}
+		err = e
+	}
+
+	// Web 域降级领奖
 	req, cerr := http.NewRequestWithContext(ctx, http.MethodPost,
-		chatBase(a)+"/activity/growth/tasks/"+taskCode+"/claim", nil)
+		siteBase(a)+"/activity/growth/tasks/"+taskCode+"/claim", nil)
 	if cerr == nil {
 		p.billingHeaders(req, a)
+		req.Header.Set("X-Client-Platform", "web")
 		if data, e := p.doJSON(req); e == nil {
-			var r struct {
-				Credit int64 `json:"credit"`
-				Energy int64 `json:"energy"`
-			}
-			_ = json.Unmarshal(data, &r)
-			return r.Credit, r.Energy, nil
+			c, en := parseClaimReward(data)
+			return c, en, nil
 		}
 	}
-	// Web 域降级领奖
-	webBase := webBaseCN
-	if isGlobal(a) {
-		webBase = globalBase
+	if err == nil {
+		err = fmt.Errorf("领取 %s 失败", taskCode)
 	}
-	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, webBase+"/activity/growth/tasks/"+taskCode+"/claim", nil)
-	if req2 != nil {
-		p.billingHeaders(req2, a)
-		req2.Header.Set("X-Client-Platform", "web")
-		if data, e := p.doJSON(req2); e == nil {
-			var r struct {
-				Credit int64 `json:"credit"`
-				Energy int64 `json:"energy"`
-			}
-			_ = json.Unmarshal(data, &r)
-			return r.Credit, r.Energy, nil
-		}
+	return 0, 0, err
+}
+
+// parseClaimReward 解领奖响应。字段可能平铺也可能在 data 里，两种都认。
+func parseClaimReward(data []byte) (credit, energy int64) {
+	var r struct {
+		Credit int64 `json:"credit"`
+		Energy int64 `json:"energy"`
 	}
-	return 0, 0, fmt.Errorf("领取 %s 失败", taskCode)
+	_ = json.Unmarshal(data, &r)
+	return r.Credit, r.Energy
 }
 
 // ── 模型列表 ─────────────────────────────────────────────

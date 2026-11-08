@@ -219,13 +219,16 @@ func (s *Store) AllQuotas() map[string]*model.QuotaInfo {
 }
 
 // RecordCheckin 记录今日签到结果。
+// 记录会归一化 Phase / At（provider 未填时按三态推导），供面板展示
+// 「几点领到的」以及区分 claimed（真领到）/ already（上游已签）/ info（无签到体系）。
 func (s *Store) RecordCheckin(provider, uid string, r model.CheckinResult) {
+	r.NormalizePhase(time.Now().Unix())
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := provider + ":" + uid + ":" + time.Now().Format("2006-01-02")
 	s.checkinLog[key] = r
-	// 只保留最近 7 天
-	cutoff := time.Now().AddDate(0, 0, -7).Format("2006-01-02")
+	// 只保留最近 checkinRetentionDays 天
+	cutoff := time.Now().AddDate(0, 0, -checkinRetentionDays).Format("2006-01-02")
 	for k := range s.checkinLog {
 		if d := k[strings.LastIndex(k, ":")+1:]; d < cutoff {
 			delete(s.checkinLog, k)
@@ -239,8 +242,64 @@ func (s *Store) TodayCheckin(provider, uid string) (model.CheckinResult, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.checkinLog[provider+":"+uid+":"+time.Now().Format("2006-01-02")]
+	if ok && r.Phase == "" {
+		r.NormalizePhase(0)
+	}
 	return r, ok
 }
+
+// CheckinRecord 一条历史签到记录。
+type CheckinRecord struct {
+	Provider string              `json:"provider"`
+	UID      string              `json:"uid"`
+	Date     string              `json:"date"`
+	Result   model.CheckinResult `json:"result"`
+}
+
+// CheckinHistory 返回最近 days 天的签到记录（按日期倒序，最近 500 条）。
+// 面板「签到历史」与通知汇总共用；只读快照，不改动内部状态。
+func (s *Store) CheckinHistory(days int) []CheckinRecord {
+	if days <= 0 {
+		days = 7
+	}
+	cutoff := time.Now().AddDate(0, 0, -days).Format("2006-01-02")
+	s.mu.Lock()
+	out := make([]CheckinRecord, 0, len(s.checkinLog))
+	for k, v := range s.checkinLog {
+		i := strings.LastIndex(k, ":")
+		if i <= 0 {
+			continue
+		}
+		date := k[i+1:]
+		if date < cutoff {
+			continue
+		}
+		head := k[:i]
+		j := strings.Index(head, ":")
+		if j <= 0 {
+			continue
+		}
+		r := v
+		if r.Phase == "" {
+			r.NormalizePhase(0)
+		}
+		out = append(out, CheckinRecord{Provider: head[:j], UID: head[j+1:], Date: date, Result: r})
+	}
+	s.mu.Unlock()
+	sort.Slice(out, func(a, b int) bool {
+		if out[a].Date != out[b].Date {
+			return out[a].Date > out[b].Date
+		}
+		return out[a].Result.At > out[b].Result.At
+	})
+	if len(out) > 500 {
+		out = out[:500]
+	}
+	return out
+}
+
+// checkinRetentionDays 签到记录保留天数（够看一周节奏，又不会把 state.json 撑大）。
+const checkinRetentionDays = 30
 
 // ── 工具 ─────────────────────────────────────────────────
 

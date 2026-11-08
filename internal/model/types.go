@@ -40,7 +40,7 @@ type Account struct {
 	// Source 凭证类型（qoder：pat / oauth），影响会话构建方式
 	Source string `json:"source,omitempty"`
 
-	Disabled   bool  `json:"disabled,omitempty"`
+	Disabled bool `json:"disabled,omitempty"`
 	// NeedsRelogin 凭证已失效（上游返回鉴权错误）：调度跳过该账号，面板提示重新登录。
 	// 重新导入凭证 / 手动 resume 后清除。
 	NeedsRelogin bool  `json:"needs_relogin,omitempty"`
@@ -73,15 +73,62 @@ type QuotaInfo struct {
 	FetchedAt int64          `json:"fetched_at"`
 }
 
+// 签到阶段（CheckinResult.Phase）。由调度层统一归一化后写入，
+// 各 provider 只需按 OK / Already / Info 三态返回，不必自己填 Phase。
+const (
+	// CheckinPhaseClaimed 本次真实领取到积分
+	CheckinPhaseClaimed = "claimed"
+	// CheckinPhaseAlready 上游判定今日已签（幂等）
+	CheckinPhaseAlready = "already"
+	// CheckinPhaseInfo 平台无签到体系 / 状态说明（非失败）
+	CheckinPhaseInfo = "info"
+	// CheckinPhaseFailed 真失败
+	CheckinPhaseFailed = "failed"
+)
+
 // CheckinResult 签到结果。
 type CheckinResult struct {
-	OK      bool   `json:"ok"`
-	Already bool   `json:"already,omitempty"` // 今日已签
+	OK      bool `json:"ok"`
+	Already bool `json:"already,omitempty"` // 今日已签
 	// Info 说明型结果（非失败）：平台无独立签到接口（发放由登录/服务端触发），
 	// 当日尚未观察到发放。前端渲染中性说明标签而非失败标签；调度层照常重试。
 	Info          bool   `json:"info,omitempty"`
 	Message       string `json:"message"`
 	CreditsEarned int64  `json:"credits_earned,omitempty"`
+
+	// Phase 归一化后的签到阶段（claimed / already / info / failed）。
+	// 空值表示这条结果尚未经过调度层归一化（如 provider 单测直接构造的结果）。
+	Phase string `json:"phase,omitempty"`
+	// At 观察时刻（Unix 秒）。带时刻才能区分「上午 10 点前看到的已签」
+	// 与「10 点后真正领到的」——部分平台的每日活动并非零点刷新，
+	// 只有日期没有时刻时无法判断记录是否可信。
+	At int64 `json:"at,omitempty"`
+}
+
+// NormalizePhase 按三态填充 Phase 与 At（已填写的保留，便于 provider 覆盖）。
+func (r *CheckinResult) NormalizePhase(now int64) {
+	if r.At == 0 {
+		r.At = now
+	}
+	if r.Phase != "" {
+		return
+	}
+	switch {
+	case r.Already:
+		r.Phase = CheckinPhaseAlready
+	case r.Info:
+		r.Phase = CheckinPhaseInfo
+	case r.OK:
+		r.Phase = CheckinPhaseClaimed
+	default:
+		r.Phase = CheckinPhaseFailed
+	}
+}
+
+// Settled 当日签到是否已有确定结论（已领取或上游确认已签）。
+// Info（无签到体系）与 failed 都返回 false —— 它们当日仍应继续复查。
+func (r *CheckinResult) Settled() bool {
+	return r.OK || r.Already
 }
 
 // ModelInfo 模型条目。
@@ -125,4 +172,18 @@ type PollResult struct {
 	Status  string   `json:"status"`
 	Message string   `json:"message,omitempty"`
 	Account *Account `json:"account,omitempty"`
+}
+
+// GrowthTask 成长任务快照（面板展示用，只读）。
+// 任务进度由客户端行为事件推进，单独的「接受/领奖」不会让 current 动，
+// 所以界面必须能看见 current/target，才知道是「没达标」还是「没领」。
+type GrowthTask struct {
+	Code       string `json:"code"`
+	Title      string `json:"title"`
+	Target     int64  `json:"target"`
+	Current    int64  `json:"current"`
+	Claimable  bool   `json:"claimable"`
+	Claimed    bool   `json:"claimed"`
+	Locked     bool   `json:"locked,omitempty"`
+	ActionDesc string `json:"action_desc,omitempty"` // 有自动化动作时才填
 }

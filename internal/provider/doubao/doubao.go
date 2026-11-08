@@ -11,8 +11,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,6 +22,7 @@ import (
 	"time"
 
 	"chinacpa/internal/model"
+	"chinacpa/internal/netdiag"
 	"chinacpa/internal/provider"
 )
 
@@ -29,7 +32,15 @@ const dbUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 // 打开链接 → 豆包 App 扫码 → 自动回调纳管）；生成请求以整串 Cookie + 生成的
 // 设备标识直连网页 API（fp=s_v_web_id 随 Cookie 自带，msToken 可为空）。
 type Provider struct {
-	http *http.Client // 重定向不跟随：登录链路需手动收每跳 Set-Cookie；登录失效时上游会 302
+	http *http.Client // 按 config 决定的默认路由（重定向不跟随：登录链路需手动收每跳 Set-Cookie）
+
+	// httpDirect 强制直连客户端。仅当默认路由走代理时用它做兜底：
+	// 代理进程被关掉 / 规则把豆包甩去境外时，Go 侧还能自己救回来，
+	// 不至于让用户对着「连不上」反复重贴 Cookie。
+	httpDirect *http.Client
+	// viaProxy 默认路由是否经过代理（决定是否值得兜底重试）。
+	viaProxy bool
+	proxyRaw string
 
 	// ImageDailyLimit / VideoDailyLimit 每账号每日生成上限（本地计数，config 注入）
 	ImageDailyLimit int64
@@ -41,6 +52,14 @@ type Provider struct {
 	// qrSessions 扫码登录会话表（StartLogin 建、PollLogin 驱动、面板扫码页只读）。
 	qrMu       sync.Mutex
 	qrSessions map[string]*qrSession
+
+	// ── 每日签到（浏览器通道）─────────────────────────────
+	// 豆包签到接口带设备签名，纯站外直连会被判「系统错误」；页面上下文内调用
+	// 才带得上完整会话签名，因此走一次无头浏览器（同一时刻只跑一个实例）。
+	checkinBrowser    bool
+	checkinChromePath string
+	browserNoProxy    bool // 无头浏览器强制直连（避免系统代理残留把签到拖死）
+	cdpMu             sync.Mutex
 }
 
 // New 构造；imageLimit/videoLimit 为每日生成上限（<=0 用默认 50/10）。
@@ -51,17 +70,118 @@ func New(imageLimit, videoLimit int64) *Provider {
 	if videoLimit <= 0 {
 		videoLimit = 10
 	}
-	return &Provider{
-		http: &http.Client{
-			Timeout: 30 * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
+	p := &Provider{
 		ImageDailyLimit: imageLimit,
 		VideoDailyLimit: videoLimit,
 		qrSessions:      map[string]*qrSession{},
+		browserNoProxy:  true,
 	}
+	p.SetProxy("")
+	return p
+}
+
+// SetProxy 设置出网路由。mode 取值：
+//
+//	""/"env"  跟随环境变量 HTTP(S)_PROXY（默认，等价于未配置）
+//	"system"  用 Windows 系统代理（Internet 选项里那个；代理软件关闭后可能残留）
+//	"direct"  强制直连，完全不用代理（豆包是境内站点，这条通常最稳）
+//	"http://127.0.0.1:2080"  指定代理地址
+func (p *Provider) SetProxy(mode string) {
+	p.proxyRaw = strings.TrimSpace(mode)
+	p.http = newDBClient(p.proxyRaw, false)
+	proxyUsed := true
+	switch strings.ToLower(p.proxyRaw) {
+	case "direct", "none", "off":
+		proxyUsed = false
+	case "":
+		proxyUsed = netdiag.EnvProxy() != ""
+	case "env":
+		proxyUsed = netdiag.EnvProxy() != ""
+	case "system":
+		en, srv := netdiag.SystemProxy()
+		proxyUsed = en && srv != ""
+	}
+	p.viaProxy = proxyUsed
+	if proxyUsed {
+		p.httpDirect = newDBClient("direct", false)
+	} else {
+		p.httpDirect = nil
+	}
+}
+
+// proxyMode 归一化后的路由模式（日志/面板展示）。
+func (p *Provider) proxyMode() string { return p.proxyRaw }
+
+// newDBClient 构造豆包专用客户端。重定向一律不跟随：登录链路要手动收每跳
+// Set-Cookie，凭证失效时上游也会 302 到登录页。
+func newDBClient(mode string, _ bool) *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ForceAttemptHTTP2 = true
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "direct", "none", "off":
+		tr.Proxy = nil
+	case "system":
+		// Go 不读注册表，这里显式把系统代理读出来自己用
+		if en, srv := netdiag.SystemProxy(); en && srv != "" {
+			if u, err := url.Parse(withScheme(srv)); err == nil {
+				tr.Proxy = http.ProxyURL(u)
+			} else {
+				tr.Proxy = nil
+			}
+		} else {
+			tr.Proxy = nil
+		}
+	case "", "env":
+		tr.Proxy = http.ProxyFromEnvironment
+	default:
+		if u, err := url.Parse(withScheme(mode)); err == nil && u.Host != "" {
+			tr.Proxy = http.ProxyURL(u)
+		} else {
+			tr.Proxy = http.ProxyFromEnvironment
+		}
+	}
+	return &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: tr,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+// withScheme 补全裸地址（"127.0.0.1:2080" → "http://127.0.0.1:2080"）。
+func withScheme(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.Contains(raw, "://") {
+		return raw
+	}
+	return "http://" + raw
+}
+
+// do 发请求；走代理失败时自动改用直连重试一次。
+// mk 用于重建请求（重试时 body 已被消费，必须重造）。
+func (p *Provider) do(mk func() (*http.Request, error)) (*http.Response, error) {
+	req, err := mk()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := p.http.Do(req)
+	if err == nil || p.httpDirect == nil {
+		return resp, err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return resp, err
+	}
+	req2, mkErr := mk()
+	if mkErr != nil {
+		return resp, err
+	}
+	resp2, err2 := p.httpDirect.Do(req2)
+	if err2 != nil {
+		return resp, err
+	}
+	log.Printf("豆包：经代理（%s）请求失败（%v），已自动改走直连", p.proxyRaw, err)
+	return resp2, nil
 }
 
 func (p *Provider) ID() string          { return "doubao" }
@@ -130,17 +250,20 @@ func dbHeaders(a *model.Account, contentType string) map[string]string {
 // dbPost POST JSON（SSE/JSON 通用；重定向已被 client 禁止，3xx 即凭证失效）。
 func (p *Provider) dbPost(ctx context.Context, a *model.Account, path string, query url.Values, contentType string, body []byte, extra map[string]string) (*http.Response, error) {
 	u := dbOrigin + path + "?" + query.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
+	mk := func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range dbHeaders(a, contentType) {
+			req.Header.Set(k, v)
+		}
+		for k, v := range extra {
+			req.Header.Set(k, v)
+		}
+		return req, nil
 	}
-	for k, v := range dbHeaders(a, contentType) {
-		req.Header.Set(k, v)
-	}
-	for k, v := range extra {
-		req.Header.Set(k, v)
-	}
-	return p.http.Do(req)
+	return p.do(mk)
 }
 
 // classifyStatus HTTP 状态 → 错误分类。
@@ -236,13 +359,20 @@ func (p *Provider) validate(ctx context.Context, a *model.Account) error {
 	body, _ := json.Marshal(map[string]any{})
 	resp, err := p.dbPost(ctx, a, "/samantha/aispace/homepage", q, "application/json", body, nil)
 	if err != nil {
-		return fmt.Errorf("校验请求失败: %w", err)
+		return fmt.Errorf("校验请求失败（网络层，直连与代理都试过）: %v；"+
+			"请在面板豆包卡片点「网络诊断」看是哪一跳断的，或把 config.json → doubao.proxy 设为 direct（境内直连通常最稳）", err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden ||
 		resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		return authExpiredError(resp.StatusCode, string(raw))
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		// 404 不是凭证问题：要么路径改版，要么本地网络/代理把请求投到了错误节点。
+		// 别让用户对着「Cookie 已失效」的提示反复重贴凭证。
+		return fmt.Errorf("豆包接口返回 404（路径不存在，多为上游改版或网络/代理劫持）：%s；请确认浏览器能打开 www.doubao.com 后重试，持续 404 需更新程序",
+			truncateRunes(string(raw), 120))
 	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("校验失败 HTTP %d: %s", resp.StatusCode, truncateRunes(string(raw), 160))
@@ -340,9 +470,20 @@ func (p *Provider) Quota(ctx context.Context, a *model.Account) (*model.QuotaInf
 	}, nil
 }
 
-// Checkin 豆包无签到体系。
-func (p *Provider) Checkin(_ context.Context, _ *model.Account) (*model.CheckinResult, error) {
-	return nil, provider.ErrNotSupported
+// Checkin 每日签到。
+// 豆包签到接口带设备签名、且活动页是渐进水合的前端应用，纯站外直连拿不到
+// 可靠结论；因此走一次无头浏览器（页面上下文内调接口 + 必要时点按钮）。
+// 未开启浏览器通道时返回「说明型」结果而非失败——聊天用户不该因为没配
+// 签到通道就看到一片红色。
+func (p *Provider) Checkin(ctx context.Context, a *model.Account) (*model.CheckinResult, error) {
+	if !p.checkinBrowser {
+		return &model.CheckinResult{
+			OK:      false,
+			Info:    true,
+			Message: "豆包签到需在 config.json 打开 doubao.checkin_via_browser",
+		}, nil
+	}
+	return p.checkinViaBrowser(ctx, a), nil
 }
 
 // ── 模型目录 ─────────────────────────────────────────────

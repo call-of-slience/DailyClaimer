@@ -352,7 +352,7 @@ section h2{font-size:12.5px;font-weight:600;letter-spacing:.08em;text-transform:
 .kpi-sub{font-size:11.5px;color:var(--muted);margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 
 /* ── 仪表板主工作区（左右平衡双栏，让左主栏有充裕空间展示拓扑流光动画与额度） ──────── */
-.dash-workspace{display:grid;grid-template-columns:minmax(0,1.9fr) minmax(280px,0.95fr);gap:18px;align-items:start}
+.dash-workspace{display:grid;grid-template-columns:minmax(0,1.72fr) minmax(300px,1fr);gap:16px;align-items:start}
 @media (max-width:1120px){.dash-workspace{grid-template-columns:1fr}}
 
 /* 平台额度多卡片网格 */
@@ -512,6 +512,8 @@ code{background:var(--bg-soft);border:1px solid var(--border);padding:2px 7px;bo
 .tag.p-qoder-intl{color:var(--green);background:var(--green-soft)}
 .tag.p-qwenwork{color:var(--pink);background:var(--pink-soft)}
 .tag.p-doubao{color:var(--accent2);background:var(--accent-soft)}
+.tag.p-minimax{color:var(--purple);background:var(--purple-soft)}
+.tag.p-minimax-intl{color:var(--teal);background:var(--teal-soft)}
 .tag.plain{color:var(--muted);background:var(--bg-soft)}
 
 /* ── 生成额度进度条 ── */
@@ -898,6 +900,102 @@ section h2{letter-spacing:0.04em !important}
   [data-theme="glass"] .kpi-card,
   [data-theme="glass"] .modal .box{background:#fff !important;backdrop-filter:none !important;-webkit-backdrop-filter:none !important}
 }
+
+/* ══════════════════════════════════════════════════════════════
+   仪表板卡片系统：固定卡头 + 卡内独立滚动
+   每张卡片有最大高度，内容超出时在卡片内部滚动，
+   页面不再被单张卡片（拓扑、模型榜单、签到流水）无限拉长。
+   ══════════════════════════════════════════════════════════════ */
+.dash-col{display:flex;flex-direction:column;gap:16px;min-width:0}
+
+.dash-card{
+  --dc-h:none;
+  display:flex;flex-direction:column;min-height:0;position:relative;
+  background:var(--card);border:1px solid var(--border);border-radius:16px;
+  box-shadow:var(--shadow);padding:0;margin-bottom:0;
+  max-height:var(--dc-h);overflow:hidden;
+  transition:border-color .18s,box-shadow .18s;
+}
+.dash-card:hover{border-color:var(--border2)}
+.dash-card.is-scroll:hover{box-shadow:var(--shadow-lift)}
+
+/* 卡内还有内容未看完时的底部羽化提示（滚到底自动消失） */
+.dash-card::after{
+  content:'';position:absolute;left:1px;right:11px;bottom:1px;height:22px;border-radius:0 0 15px 15px;
+  background:linear-gradient(to top,var(--card) 10%,transparent);pointer-events:none;
+  opacity:0;transition:opacity .22s;
+}
+.dash-card.is-scroll:not(.at-bottom)::after{opacity:1}
+
+/* 卡头固定：标题与说明不参与滚动 */
+.dash-card>h2{
+  flex:none;margin:0;padding:12px 12px 11px 16px;gap:8px;
+  background:var(--card);border-bottom:1px solid var(--border);border-radius:16px 16px 0 0;
+  font-size:11.5px;line-height:1.35;
+}
+.dash-card>h2 .h2-extra{
+  margin-left:auto;flex:none;max-width:54%;text-align:right;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.dash-card>.topo-header{flex:none;margin:0;padding:13px 12px 12px 16px;border-bottom:1px solid var(--border)}
+
+/* 卡体：唯一滚动容器 */
+.dash-card>.sec-body{
+  flex:1 1 auto;min-height:0;padding:14px 16px 16px;
+  overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;
+}
+.dash-card>.sec-body:focus-visible{outline:2px solid var(--accent);outline-offset:-3px}
+.dash-card>.sec-body>:last-child{margin-bottom:0}
+.dash-card>.sec-body::-webkit-scrollbar{width:9px}
+.dash-card>.sec-body::-webkit-scrollbar-thumb{background:var(--border2);border-radius:99px;border:3px solid var(--card)}
+.dash-card>.sec-body:hover::-webkit-scrollbar-thumb{background:var(--faint)}
+
+/* 各卡片高度基准（内容更短时卡片自动收缩，不撑出空白） */
+.dc-topo{--dc-h:none}
+.dc-topo>.sec-body{overflow:visible;padding-bottom:14px}
+.dc-cap{--dc-h:344px}
+.dc-model{--dc-h:352px}
+.dc-chan{--dc-h:346px}
+.dc-check{--dc-h:340px}
+.dc-hist{--dc-h:426px}
+.dc-log{--dc-h:344px}
+.dash-card.expanded{--dc-h:none}
+
+/* 卡头右上角「展开 / 收起」：默认隐形，悬停或展开后常显 */
+.card-toggle{
+  flex:none;width:22px;height:22px;padding:0;margin-left:2px;
+  display:inline-flex;align-items:center;justify-content:center;
+  background:transparent;border:1px solid transparent;border-radius:6px;
+  color:var(--faint);cursor:pointer;opacity:0;
+  transition:opacity .16s,color .16s,background .16s,border-color .16s;
+}
+.dash-card:hover .card-toggle,.dash-card.expanded .card-toggle,.card-toggle:focus-visible{opacity:1}
+.card-toggle:hover{background:var(--bg-soft);border-color:var(--border);color:var(--text2)}
+.card-toggle svg{width:13px;height:13px;transition:transform .22s cubic-bezier(.16,1,.3,1)}
+.dash-card.expanded .card-toggle svg{transform:rotate(180deg)}
+@media (hover:none){.card-toggle{opacity:.55}}
+
+/* 顶部信息区排版收敛：KPI 与接入条更紧凑，把高度留给卡片 */
+.kpi-grid{gap:12px;margin-bottom:16px}
+.kpi-card{padding:15px 17px;border-radius:15px}
+.kpi-label{font-size:11.5px;margin-bottom:6px}
+.kpi-val{font-size:25px}
+.kpi-sub{font-size:11px;margin-top:5px}
+.gw-strip{padding:11px 16px;gap:12px 14px;margin-bottom:16px;border-radius:14px}
+.compact-sec{padding:0}
+/* 中等宽度下接入条会折行：末项不再被 margin-left:auto 顶到右侧，避免出现半行空白 */
+@media (max-width:1500px){
+  .gw-strip .gw-item{margin-left:0 !important}
+  .gw-strip{gap:9px 12px;padding:10px 14px}
+}
+
+/* 触屏 / 窄屏：取消卡内滚动，回归自然页面滚动（避免嵌套滚动手感） */
+@media (max-width:900px){
+  .dash-card{--dc-h:none}
+  .dash-card>.sec-body{overflow:visible;overflow-x:visible;padding:13px 14px 14px}
+  .dash-card::after{display:none}
+  .card-toggle{display:none}
+}
 </style>
 </head>
 <body>
@@ -928,6 +1026,7 @@ section h2{letter-spacing:0.04em !important}
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></symbol>
   <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
   <symbol id="i-caret" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+  <symbol id="i-expand" viewBox="0 0 24 24"><path d="M7 8l5 5 5-5"/><path d="M7 14l5 5 5-5"/></symbol>
 </svg>
 
 <div id="loginMask">
@@ -1013,9 +1112,9 @@ section h2{letter-spacing:0.04em !important}
       <!-- 仪表板主工作区（左右平衡网格） -->
       <div class="dash-workspace">
         <!-- 左主栏：实时路由拓扑流光动画 + 额度看板 + 模型用量 + 渠道统计 -->
-        <div style="display:flex;flex-direction:column;gap:18px;min-width:0">
+        <div class="dash-col">
           <!-- 实时网关调度拓扑（对照图 3） -->
-          <section style="margin-bottom:0" class="topo-section" id="section-topology">
+          <section class="dash-card dc-topo topo-section" id="section-topology">
             <div class="topo-header">
               <div class="topo-title">
                 <span class="live-dot" style="background:#10b981;box-shadow:0 0 0 3px rgba(16,185,129,.25)"></span>
@@ -1026,6 +1125,7 @@ section h2{letter-spacing:0.04em !important}
                 <span class="topo-subtext">纳管 <b id="topoAcctCount">7</b> 个上游实例 · 多客户端并发接入就绪</span>
               </div>
             </div>
+            <div class="sec-body">
             <div class="topo-rule-banner">
               <span class="ico"><svg class="ui" ><use href="#i-flow"/></svg></span>
               <span class="txt"><b>负载均衡与会话亲和策略</b>：新会话采用实例轮询（Round-Robin）分配；多轮交互启用会话亲和（Session Affinity）锁定，以最大化提示词缓存（Prompt Cache）命中率。</span>
@@ -1084,41 +1184,47 @@ section h2{letter-spacing:0.04em !important}
               <span class="tt-tag">链路决策</span>
               <span class="tt-log" id="topoTickerText">网关服务就绪 · 实时监听上游链路调度与保活心跳…</span>
             </div>
+            </div>
           </section>
 
-          <section style="margin-bottom:0">
+          <section class="dash-card dc-cap">
             <h2>各服务商配额与实时容量 <span class="h2-extra">纳管主流上游服务商 · 实时同步</span></h2>
-            <div class="cap-grid" id="dashCap"></div>
+            <div class="sec-body"><div class="cap-grid" id="dashCap"></div></div>
           </section>
 
-          <section style="margin-bottom:0">
+          <section class="dash-card dc-model">
             <h2>模型调用分布与用量审计 <span class="h2-extra">按模型统计调用频次、Token 用量与折合成本</span></h2>
-            <div id="modelBars"></div>
+            <div class="sec-body"><div id="modelBars"></div></div>
           </section>
 
-          <section style="margin-bottom:0">
+          <section class="dash-card dc-chan">
             <h2>上游链路质量与容灾统计 <span class="h2-extra">渠道调用成功率与高可用故障转移审计</span></h2>
-            <div id="chanStats"></div>
+            <div class="sec-body"><div id="chanStats"></div></div>
           </section>
         </div>
 
         <!-- 右主栏：运行自检（紧凑微坞） + 历史统计趋势 + 签到流水 -->
-        <div style="display:flex;flex-direction:column;gap:18px;min-width:0">
-          <section style="margin-bottom:0" class="compact-sec">
+        <div class="dash-col">
+          <section class="dash-card dc-check compact-sec">
             <h2>系统服务状态与机制巡检 <span class="h2-extra">调度集群、心跳保活与自动化任务</span></h2>
-            <div class="check-dock" id="dashCheck"></div>
+            <div class="sec-body"><div class="check-dock" id="dashCheck"></div></div>
           </section>
 
-          <section style="margin-bottom:0" class="compact-sec">
+          <section class="dash-card dc-hist compact-sec">
             <h2>历史用量走势与数据归档 <span class="h2-extra">本地持久化数据仓库</span></h2>
-            <div class="hist-top" id="dashHist"></div>
-            <div class="bars" id="dashHistBars" style="height:110px;margin-bottom:12px"></div>
-            <div id="dashHistTbl"></div>
+            <div class="sec-body">
+              <div class="hist-top" id="dashHist"></div>
+              <div class="bars" id="dashHistBars" style="height:110px;margin-bottom:12px"></div>
+              <div id="dashHistTbl"></div>
+            </div>
           </section>
 
-          <section style="margin-bottom:0" class="compact-sec">
+          <section class="dash-card dc-log compact-sec">
             <h2>自动化任务与签到日志 <span class="h2-extra" id="checkinExtra"></span></h2>
-            <div class="chipwrap" id="checkinChips"></div>
+            <div class="sec-body">
+              <div class="chipwrap" id="checkinChips"></div>
+              <div id="checkinHist"></div>
+            </div>
           </section>
         </div>
       </div>
@@ -1175,6 +1281,7 @@ section h2{letter-spacing:0.04em !important}
           </div>
           <div style="display:flex;gap:8px;align-items:center">
             <button class="btn sm" onclick="checkinAll()"><svg class="ui" ><use href="#i-bolt"/></svg> 一键签到</button>
+            <button class="btn sm" onclick="testNotify()" title="验证通知渠道是否打通">测试推送</button>
             <button class="btn sm primary" onclick="openAdd()"><svg class="ui"><use href="#i-plus"/></svg> 添加账号</button>
           </div>
         </div>
@@ -1207,6 +1314,7 @@ section h2{letter-spacing:0.04em !important}
       <div class="view-head">
         <div class="view-title">豆包生成额度</div>
         <div class="view-status" id="gqCount"></div>
+        <button class="btn sm" style="margin-left:auto" onclick="runDiag('doubao')" title="分直连/代理各投一遍，定位连不上是哪一跳">网络诊断</button>
       </div>
       <section>
         <div class="hint" style="margin-bottom:16px;font-size:13.5px;line-height:2">因豆包服务商未开放公开配额查询端点，本模块采用<b>本地实例级日用量审计</b>机制（按提交成功事件原子计数：图片以张计、视频以条计、文本以次计；跨日自动归零）。当单一实例达到限额阈值时，网关将自动置入冷却隔离并触发故障转移至备用实例。每日阈值可在 <code>config.json</code> 中的 <code>doubao.image_daily_limit</code> 及 <code>doubao.video_daily_limit</code> 进行配置。</div>
@@ -1338,11 +1446,17 @@ section h2{letter-spacing:0.04em !important}
       <div class="prov-card" onclick="startLogin('doubao')">
         <div class="t" style="color:var(--accent2)">豆包 Doubao</div><div class="d">doubao.com<br>App 扫码自动纳管 · 文/图/视频</div>
       </div>
+      <div class="prov-card" onclick="startLogin('minimax')">
+        <div class="t" style="color:var(--purple)">MiniMax</div><div class="d">agent.minimax.cn<br>设备码授权 · 自动续期 · 签到</div>
+      </div>
+      <div class="prov-card" onclick="startLogin('minimax-intl')">
+        <div class="t" style="color:var(--teal)">MiniMax 国际版</div><div class="d">agent.minimax.io<br>设备码授权 · 自动续期 · 签到</div>
+      </div>
     </div>
     <div id="loginFlow"></div>
     <div style="margin-top:18px;border-top:1px solid var(--border);padding-top:16px">
       <div style="font-weight:600;margin-bottom:4px;font-size:13px">或直接导入服务商鉴权凭据</div>
-      <p class="hint" id="importHint">WorkBuddy：refreshToken / auth 文件 JSON（国际版选「WorkBuddy 国际」）；Qwen：<code>邮箱:密码</code> 自动凭据认证（推荐，免提取）或完整 Cookie 标头（高稳定性，包含 token=）；Trae：refreshToken（国际版加前缀 global:）；Qoder：控制台 PAT（国际版前缀 global:）；千问办公：ory_rt_ 开头的 refresh token；豆包：www.doubao.com 任一请求的完整 Cookie 标头（需含 s_v_web_id 与 sessionid）。</p>
+      <p class="hint" id="importHint">WorkBuddy：refreshToken / auth 文件 JSON（国际版选「WorkBuddy 国际」）；Qwen：<code>邮箱:密码</code> 自动凭据认证（推荐，免提取）或完整 Cookie 标头（高稳定性，包含 token=）；Trae：refreshToken（国际版加前缀 global:）；Qoder：控制台 PAT（国际版前缀 global:）；千问办公：ory_rt_ 开头的 refresh token；豆包：www.doubao.com 任一请求的完整 Cookie 标头（需含 s_v_web_id 与 sessionid）；MiniMax：直接留空读本机 <code>~/.minimax/auth</code> 登录态，或粘贴 auth.json 内容 / <code>access_token</code>（有 refresh_token 才能自动续期）。</p>
       <select id="importProv" style="margin-right:8px">
         <option value="workbuddy">WorkBuddy 国内</option>
         <option value="workbuddy-intl">WorkBuddy 国际</option>
@@ -1352,11 +1466,31 @@ section h2{letter-spacing:0.04em !important}
         <option value="qoder-intl">Qoder 国际</option>
         <option value="qwenwork">千问办公</option>
         <option value="doubao">豆包 Doubao</option>
+        <option value="minimax">MiniMax</option>
+        <option value="minimax-intl">MiniMax 国际版</option>
       </select>
       <textarea id="importCred" placeholder="粘贴凭证..."></textarea>
       <button class="btn primary" onclick="doImport()">导入并验证凭据</button>
       <div class="status-line" id="importStatus"></div>
     </div>
+  </div>
+</div>
+
+<!-- 成长任务弹窗（WorkBuddy：进度 / 动作 / 领奖一次看清） -->
+<div class="modal" id="growthModal">
+  <div class="box wide">
+    <h3>WorkBuddy 成长任务 <button class="xbtn" onclick="closeGrowth()"><svg class="ui"><use href="#i-x"/></svg></button></h3>
+    <div class="m-sub">任务进度由客户端行为事件推进，只「接受 / 领奖」不会让进度动。先看卡在哪个任务，再点「一键完成」把有自动化动作的补上</div>
+    <div id="growthBody"></div>
+  </div>
+</div>
+
+<!-- 网络诊断弹窗（豆包：直连 / 环境变量代理 / 系统代理 三条路分别探测） -->
+<div class="modal" id="diagModal">
+  <div class="box wide">
+    <h3>网络诊断 <button class="xbtn" onclick="closeDiag()"><svg class="ui"><use href="#i-x"/></svg></button></h3>
+    <div class="m-sub">同一个请求分别走「直连 / 环境变量代理 / Windows 系统代理」，把 DNS → TCP → TLS → HTTP 每一跳摊开，看清到底断在哪</div>
+    <div id="diagBody"></div>
   </div>
 </div>
 
@@ -1434,8 +1568,8 @@ let TOPO_REQ=null;
 /* LIVE_LINKS：/api/live 实时进行中链路（client|provider|count），拓扑并发多链路可视化 */
 let LIVE_LINKS=[];
 let ED=null, ED_IDX=-1, TOAST_T=null, CUR_VIEW='dash';
-const PROV_NAMES={workbuddy:'WorkBuddy 国内','workbuddy-intl':'WorkBuddy 国际',qwen:'Qwen',trae:'Trae',qoder:'Qoder 国内','qoder-intl':'Qoder 国际',qwenwork:'千问办公',doubao:'豆包 Doubao'};
-const PROV_TAG={workbuddy:'p-wb','workbuddy-intl':'p-wb-intl',qwen:'p-qwen',trae:'p-trae',qoder:'p-qoder','qoder-intl':'p-qoder-intl',qwenwork:'p-qwenwork',doubao:'p-doubao'};
+const PROV_NAMES={workbuddy:'WorkBuddy 国内','workbuddy-intl':'WorkBuddy 国际',qwen:'Qwen',trae:'Trae',qoder:'Qoder 国内','qoder-intl':'Qoder 国际',qwenwork:'千问办公',doubao:'豆包 Doubao',minimax:'MiniMax','minimax-intl':'MiniMax 国际版'};
+const PROV_TAG={workbuddy:'p-wb','workbuddy-intl':'p-wb-intl',qwen:'p-qwen',trae:'p-trae',qoder:'p-qoder','qoder-intl':'p-qoder-intl',qwenwork:'p-qwenwork',doubao:'p-doubao',minimax:'p-minimax','minimax-intl':'p-minimax-intl'};
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -1480,10 +1614,10 @@ function initFromHash(){
   if(v&&$('#view-'+v))switchView(v);else switchView('dash');
 }
 
-function toast(msg,ok=true){
+function toast(msg,ok=true,ms=3200){
   const t=$('#toast');clearTimeout(TOAST_T);
   t.textContent=msg;t.className='show'+(ok?'':' err');
-  TOAST_T=setTimeout(()=>{t.className='hide';setTimeout(()=>t.className='',260)},3200);
+  TOAST_T=setTimeout(()=>{t.className='hide';setTimeout(()=>t.className='',260)},ms);
 }
 async function api(path,opts={}){
   const r=await fetch(path,{...opts,headers:{'Content-Type':'application/json',...opts.headers}});
@@ -1685,7 +1819,8 @@ function renderKPI(o){
   const cacheRate=promptTk>0?Math.round(cacheTk/promptTk*100):0;
   const online=accs.filter(a=>a.status==='ok').length;
   const totalAcc=accs.length;
-  const signed=accs.filter(a=>a.checkin_today&&(a.checkin_today.ok||a.checkin_today.info)).length;
+  const census=checkinCensus(accs);
+  const signed=census.ok;
   const reqs=today.requests||0;
   const cost=today.cost_cny||0;
 
@@ -1709,7 +1844,7 @@ function renderKPI(o){
       <div class="kpi-label"><span>上游实例可用率</span><span class="tag ${online===totalAcc&&totalAcc>0?'ok':'cooldown'}">${online}/${totalAcc} 就绪</span></div>
       <div class="kpi-val" style="color:${online===totalAcc&&totalAcc>0?'var(--green)':'var(--yellow)'}">${online} <span style="font-size:16px;color:var(--muted)">/ ${totalAcc} 实例就绪</span></div>
       <div class="kpi-sub">
-        <span>接入 ${Object.keys(o.provider_count||{}).length} 大服务商</span> · <span>自动化巡检 ${signed}/${totalAcc}</span>
+        <span>接入 ${Object.keys(o.provider_count||{}).length} 大服务商</span> · <span>可签到 ${signed}/${census.capable||0}</span>
       </div>
     </div>
     <div class="kpi-card" style="--i:3">
@@ -1744,7 +1879,8 @@ function renderCapCards(o){
     {pid:'qwen',name:'Qwen',unit:'次/天',val:o.qwen_remaining||0,count:(o.provider_count||{})['qwen']||0},
     {pid:'qoder',name:'Qoder',unit:'credits',val:o.qoder_remaining||0,count:((o.provider_count||{})['qoder']||0)+((o.provider_count||{})['qoder-intl']||0)},
     {pid:'qwenwork',name:'千问办公',unit:'积分',val:o.qwenwork_remaining||0,count:(o.provider_count||{})['qwenwork']||0},
-    {pid:'doubao',name:'豆包',unit:'次',val:dbImagesLimit>0?(dbImagesLimit-dbImagesUsed):dbCount,isDoubao:true,dbData:{imagesUsed:dbImagesUsed,imagesLimit:dbImagesLimit,videosUsed:dbVideosUsed,videosLimit:dbVideosLimit},count:dbCount}
+    {pid:'doubao',name:'豆包',unit:'次',val:dbImagesLimit>0?(dbImagesLimit-dbImagesUsed):dbCount,isDoubao:true,dbData:{imagesUsed:dbImagesUsed,imagesLimit:dbImagesLimit,videosUsed:dbVideosUsed,videosLimit:dbVideosLimit},count:dbCount},
+    {pid:'minimax',name:'MiniMax',unit:'积分',val:o.minimax_remaining||0,count:((o.provider_count||{})['minimax']||0)+((o.provider_count||{})['minimax-intl']||0)}
   ];
 
   el.innerHTML=cards
@@ -1867,7 +2003,9 @@ function renderTopology(o){
       'qoder-intl': 'gpt-4o / claude',
       'doubao': 'doubao-seedream / 1.5',
       'qwenwork': 'qwen-max / plus',
-      'qwen': 'qwen-flash / 2k'
+      'qwen': 'qwen-flash / 2k',
+      'minimax': 'MiniMax-M2 / abab',
+      'minimax-intl': 'MiniMax-M2 / abab'
     };
 
     const provKeys = Object.keys(grouped);
@@ -2125,8 +2263,13 @@ function renderCheckList(o){
   const el=$('#dashCheck');if(!el)return;
   const accs=o.accounts||[],sch=o.schedule||{};
   const online=accs.filter(a=>a.status==='ok').length;
-  const signed=accs.filter(a=>a.checkin_today&&(a.checkin_today.ok||a.checkin_today.info)).length;
+  const census=checkinCensus(accs);
+  const signed=census.ok;
   const pubLen=(PUB.models||[]).length;
+  const checkinDetail=census.capable
+    ? `可签到 ${signed}/${census.capable}${census.fail?` · 失败 ${census.fail}`:''}${census.info?` · 待确认 ${census.info}`:''}${census.pending?` · 未跑 ${census.pending}`:''}${census.skip?` · 跳过 ${census.skip}`:''}${census.na?` · 无体系 ${census.na}`:''}${sch.next_checkin?' · 下次 '+nextCheckinText(sch.next_checkin):''}`
+    : (accs.length?`无可签到平台（无体系 ${census.na}${census.skip?` · 跳过 ${census.skip}`:''}）`:'无活跃实例');
+  const checkinState=census.capable?(census.fail||census.pending?'warn':(signed===census.capable?'ok':'warn')):(accs.length?'idle':'bad');
   const checks=[
     {t:'上游实例就绪',d:accs.length?`${online}/${accs.length} 实例可用`:'未接入实例',
       s:accs.length?(online===accs.length?'ok':'warn'):'bad',ico:ICON.user,
@@ -2134,8 +2277,8 @@ function renderCheckList(o){
     {t:'路由映射策略',d:pubLen?`${pubLen} 个路由模型`:'未配置路由模型',
       s:pubLen?'ok':'idle',ico:ICON.cube,
       action:`<button class="btn sm" style="padding:2px 7px;font-size:11px;border-radius:6px" onclick="switchView('publish')">路由配置</button>`},
-    {t:'定时配额巡检',d:accs.length?`已同步 ${signed}/${accs.length}${sch.next_checkin?' · 下次巡检 '+nextCheckinText(sch.next_checkin):''}`:'无活跃实例',
-      s:accs.length?(signed===accs.length?'ok':'warn'):'bad',ico:ICON.check,
+    {t:'定时配额巡检',d:checkinDetail,
+      s:checkinState,ico:ICON.check,
       action:`<button class="btn sm" style="padding:2px 7px;font-size:11px;border-radius:6px" onclick="checkinAll()">立即巡检</button>`},
     {t:'用量配额拉取',d:sch.quota_refresh_minutes?`周期：每 ${sch.quota_refresh_minutes} 分钟`:'未开启',
       s:sch.quota_refresh_minutes?'ok':'warn',ico:ICON.clock,
@@ -2233,22 +2376,14 @@ function renderAcctCards(){
     if(a.status==='disabled'){cls='disabled';txt='已禁用'}
     if(a.status==='expired'){cls='expired';txt='令牌已过期'}
     if(a.status==='relogin'){cls='expired';txt='凭证失效'}
-    /* 签到：短标签，完整信息走 tooltip */
-    let chk='<span class="tag plain">—</span>';
-    if(a.checkin_today){
-      const c=a.checkin_today;
-      const full=String(c.message||'');
-      const tip=full?` title="${esc(full)}"`:(c.info?' title="该平台无签到体系"':'');
-      if(c.ok)chk=`<span class="tag ok"${tip}>✓ ${c.already?'已签':'签到成功'}</span>`;
-      else if(c.info)chk=`<span class="tag info"${tip}>${esc(full||'无签到接口')}</span>`;
-      else chk=`<span class="tag cooldown"${tip}>${esc(full?full.slice(0,8)+'…':'未签')}</span>`;
-    }
+    /* 签到：短标签，完整信息走 tooltip；带时刻，才能看出是几点领到的 */
+    let chk=checkinTag(a.checkin_today,{short:a.checkin_today?String(a.checkin_today.message||'').slice(0,8):''});
     /* Token 有效期 */
     const days=a.token_days_left;
     const exp=a.expires_at>0?(days>0?`${days.toFixed(1)} 天`:'已过期'):'长期';
     const expCls=a.expires_at>0&&!(days>0)?'expired':(a.expires_at>0&&days<3?'cooldown':'plain');
     const intl=(a.realm==='global'&&a.provider!=='workbuddy-intl'&&a.provider!=='qoder-intl')?'·国际':'';
-    const shortName=({workbuddy:'WB','workbuddy-intl':'WB·INTL',qwen:'QWEN',trae:'TRAE',qoder:'QD','qoder-intl':'QD',qwenwork:'QWW',doubao:'DB'})[a.provider]||a.provider;
+    const shortName=({workbuddy:'WB','workbuddy-intl':'WB·INTL',qwen:'QWEN',trae:'TRAE',qoder:'QD','qoder-intl':'QD',qwenwork:'QWW',doubao:'DB',minimax:'MM','minimax-intl':'MM·INTL'})[a.provider]||a.provider;
     const provTag=`<span class="tag ${PROV_TAG[a.provider]||'plain'}">${shortName}${intl}</span>`;
     /* 额度单元格：数值 + 行内进度条（有上限彩条+百分比，无上限灰字标注） */
     const barCls=pct>=100?'full':pct>=70?'warn':'';
@@ -2268,6 +2403,7 @@ function renderAcctCards(){
       <td>${a.inflight>0?`<span class="tag ok">运行中 ${a.inflight}</span>`:'<span class="tag plain">空闲</span>'}</td>
       <td class="aq-acts">
         <button class="btn sm" onclick="act('${a.provider}','${a.uid}','checkin')">签到巡检</button>
+        ${a.provider==='workbuddy'?`<button class="btn sm" onclick="openGrowth('${a.provider}','${a.uid}')" title="查看任务进度并自动补足">成长任务</button>`:''}
         <button class="btn sm" onclick="act('${a.provider}','${a.uid}','quota')">同步配额</button>
         <button class="btn sm" onclick="act('${a.provider}','${a.uid}','toggle')">${a.disabled?'启用':'禁用'}</button>
         ${a.needs_relogin?`<button class="btn sm" onclick="act('${a.provider}','${a.uid}','resume')">连接重试</button>`:''}
@@ -2362,28 +2498,104 @@ function renderModelBars(o){
 }
 
 /* 每日签到概览 */
-/* checkinTag 统一渲染今日签到标签：成功绿 / 说明型（无签到接口）蓝 / 失败黄 */
+/* fmtHM 签到时刻（本地时:分）。记录里带时刻才能分辨「上午 10 点前看到的已签」
+   （可能来自昨天的活动）与「刚真正领到的」。 */
+function fmtHM(unix){
+  if(!unix)return'';
+  const d=new Date(unix*1000);
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
 /* checkinTag 统一渲染今日签到标签：成功绿 / 说明型（无签到接口）蓝 / 失败黄。
    opt.short 提供卡内短文案，完整 message 始终保留在 title 供悬浮查看。 */
 function checkinTag(c,opt){
   if(!c)return'<span class="tag plain">—</span>';
-  if(c.ok)return`<span class="tag ok">✓ ${c.already?'已签':'签到成功'}</span>`;
   const full=String(c.message||'');
-  const short=(opt&&opt.short!=null)?String(opt.short):full;
   const tip=full?` title="${esc(full)}"`:'';
+  const at=c.at?` ${fmtHM(c.at)}`:'';
+  if(c.ok){
+    const already=(c.phase==='already')||c.already;
+    return`<span class="tag ok"${tip}>✓ ${already?'已签':'领取'}${at}</span>`;
+  }
+  const short=(opt&&opt.short!=null)?String(opt.short):full;
   if(c.info)return`<span class="tag info"${tip}>${esc(short||'无签到接口')}</span>`;
   return`<span class="tag cooldown"${tip}>${esc(short||'未签')}</span>`;
+}
+function checkinCapable(provider){
+  /* 目前只有 Qwen 完全没有签到体系；其余平台由服务端返回的三态决定
+     （豆包走 CDP 通道后即为可签到，故不再在此硬编码排除）。 */
+  return provider!=='qwen';
+}
+function checkinCensus(accs){
+  const out={total:accs.length,na:0,skip:0,ok:0,fail:0,pending:0,info:0,capable:0};
+  for(const a of accs||[]){
+    if(a.disabled || a.needs_relogin || a.status==='relogin' || a.status==='expired'){out.skip++;continue;}
+    if(!checkinCapable(a.provider)){out.na++;continue;}
+    out.capable++;
+    const c=a.checkin_today;
+    if(!c){out.pending++;continue;}
+    if(c.ok){out.ok++;continue;}
+    if(c.info){out.info++;continue;}
+    out.fail++;
+  }
+  return out;
 }
 function renderCheckin(o){
   const accs=o.accounts||[];
   const sch=o.schedule||{};
-  $('#checkinExtra').textContent=sch.checkin_enabled
+  const census=checkinCensus(accs);
+  const auto=sch.checkin_enabled
     ?`自动化巡检已启用${(sch.checkin_hours||[]).length?`（每日 ${(sch.checkin_hours||[]).join('、')} 点）`:''}${(sch.tasks_enabled)?' · 含开发者任务中心':''}`
     :'自动化定时巡检未启用（config.json → schedule.checkin_enabled）';
+  /* 排程质感参数：并发/抖动/截止/通知渠道 —— 一个人管多号时最该看的四项 */
+  const schedBits=[];
+  if(sch.checkin_concurrency)schedBits.push(`并发 ${sch.checkin_concurrency}`);
+  if(sch.checkin_jitter_minutes)schedBits.push(`抖动 ${sch.checkin_jitter_minutes} 分内`);
+  if(sch.checkin_deadline)schedBits.push(`截止 ${sch.checkin_deadline}`);
+  schedBits.push((sch.notify_channels||[]).length?`通知 ${sch.notify_channels.join('/')}`:'未配通知');
+  const bits=[`可签到 ${census.ok}/${census.capable}`];
+  if(census.fail)bits.push(`失败 ${census.fail}`);
+  if(census.info)bits.push(`待确认 ${census.info}`);
+  if(census.pending)bits.push(`未跑 ${census.pending}`);
+  if(census.skip)bits.push(`跳过 ${census.skip}（禁用/需登录）`);
+  if(census.na)bits.push(`无体系 ${census.na}`);
+  $('#checkinExtra').textContent=`${auto} · ${bits.join(' · ')} · ${schedBits.join(' · ')}`;
   $('#checkinChips').innerHTML=accs.length?accs.map((a,i)=>{
     let tag=checkinTag(a.checkin_today);
-    return `<span class="chip" style="--i:${i}">${esc(a.nickname||a.uid)}${tag}</span>`;
+    const name=esc(a.nickname||a.uid);
+    const skip=a.disabled?'禁用':(a.needs_relogin||a.status==='relogin'||a.status==='expired'?'需登录':'');
+    return `<span class="chip" style="--i:${i}">${name}${skip?`<span class="tag cooldown">${skip}</span>`:''}${tag}</span>`;
   }).join(''):'<div class="empty">暂无已接入实例</div>';
+  loadCheckinHistory(false);
+}
+
+/* 近 7 天签到记录：三态 + 观察时刻。
+   多账号时「今天哪个号几点签的、有没有补签」一眼可查，比逐个账号卡片找更快。 */
+let CHK_HIST_T=0;
+async function loadCheckinHistory(force){
+  const now=Date.now();
+  if(!force && now-CHK_HIST_T<15000)return;
+  CHK_HIST_T=now;
+  try{ renderCheckinHistory(await api('/api/checkin_history?days=7')); }catch(e){}
+}
+function renderCheckinHistory(d){
+  const el=$('#checkinHist'); if(!el)return;
+  const recs=(d&&d.records)||[];
+  const st=(d&&d.status)||{};
+  const head=`<div class="h2-extra" style="margin:12px 0 6px">
+    今日进度 ${st.done||0}/${st.total||0}${st.failed?` · 失败 ${st.failed}`:''}${st.inflight?` · 在途 ${st.inflight}`:''}${st.next_at?` · 下次重试 ${fmtHM(st.next_at)}`:''}${st.day?` · ${st.day}`:''}</div>`;
+  if(!recs.length){el.innerHTML=head+'<div class="empty" style="padding:8px;font-size:12px">近 7 天暂无签到记录</div>';return;}
+  const rows=recs.map(r=>{
+    const c=r.result||{};
+    const at=c.at?fmtHM(c.at):'';
+    const msg=String(c.message||'');
+    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px;border-top:1px solid var(--border)">
+      <span style="color:var(--faint);font-variant-numeric:tabular-nums">${esc(String(r.date||'').slice(5))}</span>
+      <span style="color:var(--text2);min-width:150px">${esc(PROV_NAMES[r.provider]||r.provider)}<span style="color:var(--faint)">/${esc(r.uid)}</span></span>
+      ${checkinTag(c)}
+      <span style="color:var(--faint);margin-left:auto;font-variant-numeric:tabular-nums">${at}</span>
+    </div>${msg&&!c.ok?`<div style="font-size:11.5px;color:var(--faint);padding:0 0 4px 62px">${esc(msg.slice(0,80))}</div>`:''}`;
+  }).join('');
+  el.innerHTML=head+rows;
 }
 
 /* ── 请求日志 ─────────────────────────── */
@@ -3157,6 +3369,13 @@ async function act(provider,uid,action){
   toast('执行中…');
   const r=await api('/api/accounts/action',{method:'POST',body:JSON.stringify({provider,uid,action})});
   if(action==='checkin')toast(r.message||(r.ok?'签到成功':(r.info?'暂无可领积分（非失败）':'签到失败')),!!(r.ok||r.info));
+  else if(action==='tasks'){
+    // 成长任务会跑一串事件上报，耗时几十秒，这里把摘要原样给出来
+    if(r.error)toast('成长任务失败：'+r.error,false);
+    else toast(`成长任务：本轮 +${r.earned||0} 积分${r.summary?' · '+r.summary:''}`,true,6000);
+    setTimeout(()=>refreshAll(false),1200);
+    return;
+  }
   else toast(action==='quota'?`剩余 ${fmt(r.remaining)}`:'操作成功',true);
   setTimeout(()=>refreshAll(false),800);
 }
@@ -3165,7 +3384,33 @@ async function delAcct(provider,uid){
   await api('/api/accounts?provider='+provider+'&uid='+encodeURIComponent(uid),{method:'DELETE',body:JSON.stringify({provider,uid})});
   toast('已删除');setTimeout(()=>refreshAll(false),500);
 }
-async function checkinAll(){toast('已发起全部签到');await api('/api/checkin_all',{method:'POST'});setTimeout(()=>refreshAll(false),2500)}
+async function checkinAll(){
+  toast('已发起全部签到，正在逐账号确认…');
+  await api('/api/checkin_all',{method:'POST'});
+  const start=Date.now();
+  while(Date.now()-start<90000){
+    await new Promise(r=>setTimeout(r,3000));
+    await refreshAll(false);
+    const c=checkinCensus((OVERVIEW&&OVERVIEW.accounts)||[]);
+    if(c.capable===0 || c.pending===0)break;
+  }
+  const c=checkinCensus((OVERVIEW&&OVERVIEW.accounts)||[]);
+  if(c.capable===0)toast('没有可签到的账号（Qwen/豆包无签到体系；禁用/失效账号会跳过）',true);
+  else if(c.fail)toast(`签到完成：成功 ${c.ok}/${c.capable}，失败 ${c.fail}，请看账号卡片`,false);
+  else if(c.info)toast(`签到完成：成功 ${c.ok}/${c.capable}，待确认 ${c.info}（千问办公等需登录触发发放）`,true);
+  else toast(`全部可签到账号已确认：${c.ok}/${c.capable}`,true);
+  loadCheckinHistory(true);
+}
+
+/* 测试推送：验证 Webhook / Telegram / Server 酱 是否打通 */
+async function testNotify(){
+  toast('正在发送测试推送…');
+  try{
+    const r=await api('/api/notify_test',{method:'POST'});
+    if(r.ok)toast(`测试推送已发出（渠道：${(r.channels||[]).join('、')}），请查看手机/群消息`,true);
+    else toast(r.error||'推送失败',false);
+  }catch(e){toast('推送请求失败：'+e.message,false)}
+}
 
 /* ── 服务密钥修改 ── */
 function openKeyEditor(){
@@ -3203,27 +3448,165 @@ function presetImport(prov){
   const ta=$('#importCred');
   const hint=$('#importHint');
   if(hint&&prov==='qwen')hint.innerHTML='<b style="color:var(--purple)">Qwen 凭据接入指南</b>：<br>① 直接输入 <code>邮箱:密码</code>（chat.qwen.ai 账号密码，半角冒号分隔）：网关将自动完成会话认证并提取访问令牌；<br>② 导入完整 Cookie 标头（推荐）：开发者工具 (F12) → Network → 触发任意对话请求 → 审查 <code>chat/completions</code> → 复制 Request Headers 中的 <code>Cookie:</code> 完整字符串；<br>③ Application → Local Storage → 提取 <code>token</code> 字段值。<br>注：通义千问官方 OAuth 设备码授权已停止服务。';
-  if(hint&&prov==='doubao')hint.innerHTML='<b style="color:var(--accent2)">豆包凭据接入指南</b>：浏览器登录 <code>www.doubao.com</code> → 按 <code>F12</code> 打开开发者工具 → <code>Network</code>（网络面板）→ 发起一次对话交互 → 审查 <code>completion</code> 请求 → 复制 <b>Request Headers</b> 中的完整 <code>Cookie:</code> 字符串。<br>Cookie 必须包含鉴权字段 <code>sessionid</code> 与客户端指纹 <code>s_v_web_id</code>。接入后支持：<code>doubao-chat</code> 文本对话、<code>seedream-5.0-flash</code> 绘图（/v1/images/generations）及 <code>seedance-2.5</code> 视频生成（火山方舟异步任务协议）。';
+  if(hint&&prov==='doubao')hint.innerHTML='<b style="color:var(--accent2)">豆包凭据接入指南</b>：浏览器登录 <code>www.doubao.com</code> → 按 <code>F12</code> 打开开发者工具 → <code>Network</code>（网络面板）→ 发起一次对话交互 → 审查 <code>completion</code> 请求 → 复制 <b>Request Headers</b> 中的完整 <code>Cookie:</code> 字符串。<br>Cookie 必须包含鉴权字段 <code>sessionid</code> 与客户端指纹 <code>s_v_web_id</code>。接入后支持：<code>doubao-chat</code> 文本对话、<code>seedream-5.0-flash</code> 绘图（/v1/images/generations）及 <code>seedance-2.5</code> 视频生成（火山方舟异步任务协议）。<br><button class="btn sm" style="margin-top:10px" onclick="runDiag(\'doubao\')">先做网络诊断（看是不是连不上）</button>';
   if(ta)ta.focus();
 }
 function closeAdd(){$('#addModal').classList.remove('open');if(POLL_TIMER){clearInterval(POLL_TIMER);POLL_TIMER=null}}
+
+/* ── 网络诊断（豆包）─────────────────────
+   同一个请求分三条路投一遍：直连 / 环境变量代理 / Windows 系统代理。
+   用户说「连不上」时，这四条链路里断在哪一跳是能直接看出来的。 */
+function closeDiag(){$('#diagModal').classList.remove('open')}
+/* ── WorkBuddy 成长任务 ─────────────────── */
+let GROWTH_ACC=null;
+function closeGrowth(){$('#growthModal').classList.remove('open')}
+async function openGrowth(provider,uid){
+  GROWTH_ACC={provider,uid};
+  $('#growthModal').classList.add('open');
+  await loadGrowth();
+}
+async function loadGrowth(){
+  if(!GROWTH_ACC)return;
+  $('#growthBody').innerHTML='<div class="status-line wait"><span class="spin"></span> 正在读取任务列表…</div>';
+  let r;
+  try{ r=await api(`/api/growth_tasks?provider=${encodeURIComponent(GROWTH_ACC.provider)}&uid=${encodeURIComponent(GROWTH_ACC.uid)}`); }
+  catch(e){ $('#growthBody').innerHTML=`<div class="status-line err">读取失败：${esc(String(e))}</div>`; return }
+  if(!r||r.error){ $('#growthBody').innerHTML=`<div class="status-line err">${esc((r&&r.error)||'无返回')}</div>`; return }
+  const ts=(r.tasks||[]).slice().sort((a,b)=>(b.claimable?1:0)-(a.claimable?1:0));
+  const cell='padding:5px 10px 5px 0;font-size:12.5px;vertical-align:top';
+  const rows=ts.map(t=>{
+    const st = t.locked ? '<span class="tag plain">未解锁</span>'
+      : t.claimed ? '<span class="tag plain">已领</span>'
+      : t.claimable ? '<span class="tag ok">可领奖</span>'
+      : '<span class="tag plain">未达标</span>';
+    const prog = t.target>0 ? `${t.current}/${t.target}` : '—';
+    const bar = t.target>0 ? `<span class="aq-bar" style="display:inline-block;width:70px;vertical-align:middle;margin-left:6px"><i style="width:${Math.min(100,Math.round(t.current*100/t.target))}%"></i></span>` : '';
+    return `<tr>
+      <td style="${cell}">${esc(t.title)}</td>
+      <td style="${cell};white-space:nowrap">${prog}${bar}</td>
+      <td style="${cell}">${st}</td>
+      <td style="${cell};color:var(--muted)">${esc(t.action_desc||'—')}</td></tr>`;
+  }).join('');
+  const claimable=ts.filter(t=>t.claimable).length;
+  const autoable=ts.filter(t=>t.action_desc).length;
+  $('#growthBody').innerHTML=`
+    <div class="hint" style="margin-bottom:10px">共 ${ts.length} 个任务 · 可领 ${claimable} 个 · 支持自动补进度 ${autoable} 个</div>
+    <table style="width:100%;border-collapse:collapse">
+      <tr style="color:var(--muted);font-size:12px;text-align:left">
+        <th style="${cell}">任务</th><th style="${cell}">进度</th><th style="${cell}">状态</th><th style="${cell}">自动动作</th></tr>
+      ${rows||`<tr><td colspan="4" class="hint" style="padding:10px 0">没有返回任务（可能活动未开启）</td></tr>`}
+    </table>
+    <div class="status-line" id="growthStatus"></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;border-top:1px solid var(--border);padding-top:14px">
+      <button class="btn" onclick="loadGrowth()">刷新</button>
+      <button class="btn primary" onclick="runGrowth()">一键完成</button>
+    </div>`;
+}
+async function runGrowth(){
+  if(!GROWTH_ACC)return;
+  const st=$('#growthStatus');
+  if(st){st.className='status-line wait';st.innerHTML='<span class="spin"></span> 正在补进度并领奖（约 30~60 秒，会按客户端节奏逐条上报）…'}
+  let r;
+  try{ r=await api('/api/accounts/action',{method:'POST',body:JSON.stringify({...GROWTH_ACC,action:'tasks'})}); }
+  catch(e){ if(st){st.className='status-line err';st.textContent='请求失败：'+e.message} return }
+  if(r&&r.error){
+    if(st){st.className='status-line err';st.textContent=r.error}
+    return;
+  }
+  if(st){st.className='status-line ok';st.innerHTML=`<svg class="ui"><use href="#i-check"/></svg> 本轮 +${r.earned||0} 积分 · ${esc(r.summary||'')}`}
+  setTimeout(()=>{loadGrowth();refreshAll(false)},1200);
+}
+
+async function runDiag(prov){
+  prov=prov||'doubao';
+  $('#diagModal').classList.add('open');
+  $('#diagBody').innerHTML='<div class="status-line wait"><span class="spin"></span> 正在探测（每条通路最多 15 秒，最长约 45 秒）…</div>';
+  let r;
+  try{ r=await api('/api/diag?provider='+encodeURIComponent(prov)); }
+  catch(e){ $('#diagBody').innerHTML=`<div class="status-line err">诊断请求失败：${esc(String(e))}</div>`; return }
+  if(!r||r.error){ $('#diagBody').innerHTML=`<div class="status-line err">${esc((r&&r.error)||'无返回')}</div>`; return }
+  const cell='padding:3px 8px 3px 0;vertical-align:top;font-size:12.5px';
+  const rows=(r.routes||[]).map(rt=>`
+    <div style="margin-top:14px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+        <span class="tag ${rt.ok?'ok':'expired'}">${rt.ok?'通':'断'}</span>
+        <b style="font-size:13.5px">${esc(rt.label)}</b>
+        ${rt.proxy?`<code style="font-size:11.5px;color:var(--muted)">${esc(rt.proxy)}</code>`:''}
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        ${(rt.steps||[]).map(s=>`<tr>
+          <td style="${cell};width:14px;color:${s.ok?'var(--green)':'var(--red)'}">${s.ok?'✓':'✕'}</td>
+          <td style="${cell};width:88px;color:var(--muted);white-space:nowrap">${esc(s.name)}</td>
+          <td style="${cell};word-break:break-all">${esc(s.detail)}</td></tr>`).join('')}
+      </table>
+    </div>`).join('');
+  const lines=[...(r.summary||[]),...(r.extra||[])];
+  $('#diagBody').innerHTML=`
+    <div class="hint" style="white-space:pre-wrap;line-height:1.95;font-size:13px">${lines.map(esc).join('\n')}</div>
+    ${rows}
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;border-top:1px solid var(--border);padding-top:14px">
+      <button class="btn" onclick="runDiag('${esc(prov)}')">重新探测</button>
+      <button class="btn primary" onclick="closeDiag()">关闭</button>
+    </div>`;
+}
 async function startLogin(prov){
   $('#loginFlow').innerHTML='<div class="status-line wait"><span class="spin"></span> 正在发起授权…</div>';
   const r=await api('/api/login/start',{method:'POST',body:JSON.stringify({provider:prov,callback_base:location.origin})});
-  if(r.error){$('#loginFlow').innerHTML=`<div class="status-line err">发起失败：${esc(r.error)}</div>`;return}
+  if(r.error){
+    // 扫码通道被上游拒绝（如 passport 返回 404）时，直接给一条能走通的路：粘贴 Cookie
+    const fb=prov==='doubao'
+      ?`<div style="margin-top:10px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap"><button class="btn sm" onclick="startBrowserLogin('doubao')">打开浏览器窗口登录</button><button class="btn sm" onclick="presetImport('doubao')">粘贴 Cookie 导入</button><button class="btn sm" onclick="runDiag('doubao')">网络诊断</button></div>`
+      :'';
+    $('#loginFlow').innerHTML=`<div class="status-line err">发起失败：${esc(r.error)}</div>${fb}`;
+    return;
+  }
   savePending(prov,r.id);
   CUR_LOGIN={prov,id:r.id};
   const html=`<h3 style="margin-top:8px;font-size:15px">${PROV_NAMES[prov]||prov} 授权登录</h3>
-    <p class="hint">${prov==='qwen'?'请访问授权页面并输入设备码完成鉴权：':prov==='trae'?'访问授权链接完成登录后网关将自动接收回调凭据（需浏览器可访问面板）：':prov==='qwenwork'?'访问授权链接并通过钉钉扫码完成企业鉴权（无需回调）：':prov==='doubao'?'请使用豆包 App 扫描二维码（对话界面 → ＋ → 扫一扫），移动端确认后自动完成接入：':'请在浏览器打开授权链接完成账号鉴权：'}</p>
-    ${prov==='doubao'?`<div style="margin:6px auto 4px;width:238px"><img src="/doubao/qrlogin/img?sid=${esc(r.id)}" alt="二维码加载中…" style="width:238px;height:238px;border:1px solid var(--border);border-radius:12px;padding:8px;box-sizing:border-box;background:var(--card)" onerror="this.outerHTML='<div style=\\'color:var(--red);padding:40px 0\\'>二维码加载失败，请点下方链接在新窗口打开</div>'"></div>`:''}
+    <p class="hint">${prov==='qwen'?'请访问授权页面并输入设备码完成鉴权：':prov==='trae'?'访问授权链接完成登录后网关将自动接收回调凭据（需浏览器可访问面板）：':prov==='qwenwork'?'访问授权链接并通过钉钉扫码完成企业鉴权（无需回调）：':prov==='doubao'?'请使用豆包 App 扫描二维码（对话界面 → ＋ → 扫一扫），移动端确认后自动完成接入：':prov.startsWith('minimax')?'在浏览器打开授权链接并登录，确认页面显示的设备码一致后点授权（窗口约 5 分钟）：':'请在浏览器打开授权链接完成账号鉴权：'}</p>
+    ${prov==='doubao'?`<div style="margin:6px auto 4px;width:238px"><img src="/doubao/qrlogin/img?sid=${esc(r.id)}" alt="二维码加载中…" style="width:238px;height:238px;border:1px solid var(--border);border-radius:12px;padding:8px;box-sizing:border-box;background:var(--card)" onerror="this.style.display='none';var d=document.getElementById('qrFail');if(d)d.style.display='block'"></div><div id="qrFail" style="display:none;text-align:center"><p style="color:var(--red);margin:8px 0">二维码加载失败（会话已失效或服务重启过）</p><button class="btn sm" onclick="startLogin('doubao')">重新获取二维码</button><button class="btn sm" style="margin-left:6px" onclick="startBrowserLogin('doubao')">窗口登录</button><button class="btn sm" style="margin-left:6px" onclick="runDiag('doubao')">网络诊断</button></div>`:''}
     ${r.user_code?`<p style="margin:8px 0">设备码：<code style="font-size:18px;letter-spacing:2px">${esc(r.user_code)}</code></p>`:''}
     <div class="urlbox">${esc(r.url)}</div>
     <button class="btn" onclick="navigator.clipboard.writeText('${esc(r.url)}').then(()=>toast('已复制'))">复制链接</button>
     <a class="btn" style="margin-left:8px" href="${esc(r.url)}" target="_blank">在新窗口打开</a>
+    ${prov==='doubao'?`<div style="margin-top:12px;padding-top:12px;border-top:1px dashed var(--border)"><button class="btn sm" onclick="startBrowserLogin('doubao')">打开浏览器窗口登录</button><div class="hint" style="margin-top:6px">扫码不通用这个：会弹出一个浏览器窗口，你在里面自己登录一次，程序自动取回登录态。</div></div>`:''}
     <div class="status-line wait" id="loginStatus"><span class="spin"></span> 等待鉴权授权完成…（成功后自动接入并同步配额）</div>`;
   $('#loginFlow').innerHTML=html;
   if(POLL_TIMER)clearInterval(POLL_TIMER);
   POLL_TIMER=setInterval(()=>pollLogin(prov,r.id),3000);
+}
+async function startBrowserLogin(prov){
+  if(POLL_TIMER){clearInterval(POLL_TIMER);POLL_TIMER=null}
+  const el0=$('#loginStatus');
+  if(el0){el0.className='status-line wait';el0.innerHTML='<span class="spin"></span> 正在启动浏览器窗口…'}
+  const r=await api('/api/login/browser',{method:'POST',body:JSON.stringify({provider:prov})});
+  if(r.error){
+    if(el0){el0.className='status-line err';el0.textContent=r.error}
+    toast(r.error);return;
+  }
+  CUR_LOGIN=null;
+  const el=()=>$('#loginStatus');
+  const tick=async()=>{
+    let s;
+    try{ s=await api('/api/login/browser_poll?id='+encodeURIComponent(r.id)); }
+    catch(e){ setTimeout(tick,2000); return; }
+    const e=el();
+    if(s.error){
+      if(e){e.className='status-line err';e.textContent=s.error}
+      return;
+    }
+    if(s.status==='success'){
+      if(e){e.className='status-line ok';e.innerHTML=`<svg class="ui"><use href="#i-check"/></svg> 接入成功：${esc(s.account?.nickname||s.account?.uid||'')}，已自动同步服务商配额`}
+      setTimeout(()=>refreshAll(false),1000);return;
+    }
+    if(s.status==='failed'){
+      if(e){e.className='status-line err';e.innerHTML='<svg class="ui"><use href="#i-x"/></svg> '+esc(s.message||'窗口登录失败')}
+      return;
+    }
+    if(e){e.className='status-line wait';e.innerHTML='<span class="spin"></span> '+esc(s.message||'等待浏览器登录…')}
+    setTimeout(tick,1500);
+  };
+  tick();
 }
 async function pollLogin(prov,id){
   try{
@@ -3236,6 +3619,11 @@ async function pollLogin(prov,id){
     }else if(r.status==='failed'){
       clearPending();
       if(el){el.className='status-line err';el.innerHTML='<svg class="ui"><use href="#i-x"/></svg> '+esc(r.message||'失败')}
+      clearInterval(POLL_TIMER);POLL_TIMER=null;
+    }else if(r.error){
+      // 会话票据丢了（服务重启 / 超过 15 分钟）：别让转圈一直转下去
+      clearPending();
+      if(el){el.className='status-line err';el.innerHTML='<svg class="ui"><use href="#i-x"/></svg> '+esc(r.error)+'（可点上方按钮重新发起）'}
       clearInterval(POLL_TIMER);POLL_TIMER=null;
     }else if(el){el.className='status-line wait';el.innerHTML=`<span class="spin"></span> ${esc(r.message||'等待授权完成…')}`}
   }catch(e){}
@@ -3267,19 +3655,71 @@ function resumePending(){
 }
 async function doImport(){
   const prov=$('#importProv').value,cred=$('#importCred').value.trim();
-  if(!cred){toast('请粘贴凭证',false);return}
-  $('#importStatus').className='status-line wait';$('#importStatus').innerHTML='<span class="spin"></span> 导入并验证服务商凭据中…';
+  const localOK=(prov==='minimax'||prov==='minimax-intl');
+  if(!cred && !localOK){toast('请粘贴凭证',false);return}
+  $('#importStatus').className='status-line wait';
+  $('#importStatus').innerHTML=`<span class="spin"></span> ${cred?'导入并验证服务商凭据中…':'读取本机 MiniMax 登录态…'}`;
   const r=await api('/api/import',{method:'POST',body:JSON.stringify({provider:prov,credential:cred})});
   if(r.error){$('#importStatus').className='status-line err';$('#importStatus').textContent='✕ '+r.error}
   else{$('#importStatus').className='status-line ok';$('#importStatus').textContent=`✓ 导入成功：${r.nickname||r.uid}，已完成鉴权与配额同步`;setTimeout(()=>refreshAll(false),1200)}
 }
 
 // init
+/* ── 仪表板卡片：卡内滚动的滚动提示 + 一键「展开 / 收起」 ───────── */
+function syncCardScroll(card,body){
+  if(!card||!body)return;
+  const overflow=body.scrollHeight-body.clientHeight>2;
+  const scrollable=overflow&&!card.classList.contains('expanded');
+  card.classList.toggle('is-scroll',scrollable);
+  const atBottom=body.scrollTop+body.clientHeight>=body.scrollHeight-3;
+  card.classList.toggle('at-bottom',!scrollable||atBottom);
+}
+function initDashCards(){
+  const cards=[...document.querySelectorAll('#view-dash .dash-card')];
+  if(!cards.length)return;
+  cards.forEach(card=>{
+    const body=card.querySelector(':scope > .sec-body');
+    if(body&&!body.dataset.scrollBound){
+      body.dataset.scrollBound='1';
+      body.tabIndex=0;body.setAttribute('role','group');
+      body.addEventListener('scroll',()=>syncCardScroll(card,body),{passive:true});
+    }
+    const head=card.querySelector(':scope > h2, :scope > .topo-header');
+    if(head&&!head.querySelector('.card-toggle')){
+      const b=document.createElement('button');
+      b.type='button';b.className='card-toggle';
+      b.title='展开卡片';b.setAttribute('aria-label','展开或收起卡片内容');b.setAttribute('aria-expanded','false');
+      b.innerHTML='<svg class="ui"><use href="#i-expand"/></svg>';
+      b.addEventListener('click',e=>{
+        e.preventDefault();e.stopPropagation();
+        const on=card.classList.toggle('expanded');
+        b.title=on?'收起卡片':'展开卡片';
+        b.setAttribute('aria-expanded',on?'true':'false');
+        syncCardScroll(card,body);
+        if(on&&typeof updateTopologyWires==='function')setTimeout(updateTopologyWires,90);
+      });
+      head.appendChild(b);
+    }
+    syncCardScroll(card,body);
+  });
+  // 数据刷新会重绘卡体内容：重绘后重新判定滚动提示
+  const dash=$('#view-dash');
+  if(dash&&window.MutationObserver&&!dash.dataset.scrollObs){
+    dash.dataset.scrollObs='1';let t=null;
+    new MutationObserver(()=>{
+      clearTimeout(t);
+      t=setTimeout(()=>cards.forEach(c=>syncCardScroll(c,c.querySelector(':scope > .sec-body'))),180);
+    }).observe(dash,{childList:true,subtree:true});
+  }
+}
+window.addEventListener('resize',()=>{
+  document.querySelectorAll('#view-dash .dash-card').forEach(c=>syncCardScroll(c,c.querySelector(':scope > .sec-body')));
+});
 (async()=>{
   initTheme();
   const r=await fetch('/api/overview');
   if(r.status===401){showLogin()}
-  else{r.json().then(()=>{$('#loginMask').style.display='none';$('#app').style.display='block';initFromHash();refreshAll(false);loadPublish();resumePending()}).catch(showLogin)}
+  else{r.json().then(()=>{$('#loginMask').style.display='none';$('#app').style.display='block';initFromHash();initDashCards();refreshAll(false);loadPublish();resumePending()}).catch(showLogin)}
 })();
 // 静默自动数据刷新（页面获焦立即刷新，后台常驻每 25 秒静默轮询，无需手动点击）
 window.addEventListener('focus',()=>{if($('#app').style.display!=='none')refreshAll(false)});

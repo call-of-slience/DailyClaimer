@@ -1,0 +1,25 @@
+[Unit]
+Description=ChinaCPA 国产大模型反代网关
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 按实际解压路径修改（示例：/opt/chinacpa）
+WorkingDirectory=/opt/chinacpa
+ExecStart=/opt/chinacpa/chinacpa -config /opt/chinacpa/config.json
+Restart=always
+RestartSec=5
+# 日志走 journald：journalctl -u chinacpa -f
+StandardOutput=journal
+StandardError=journal
+
+# 建议用普通用户跑（豆包浏览器签到不建议用 root）。
+# 先执行：useradd -r -s /usr/sbin/nologin chinacpa && chown -R chinacpa:chinacpa /opt/chinacpa
+#User=chinacpa
+#Group=chinacpa
+
+# 若只需本机访问，config.json 里把 listen 改成 127.0.0.1:8313
+
+[Install]
+WantedBy=multi-user.target

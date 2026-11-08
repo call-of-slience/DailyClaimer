@@ -3,6 +3,7 @@ package panel
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,7 @@ import (
 	"chinacpa/internal/config"
 	"chinacpa/internal/gateway"
 	"chinacpa/internal/model"
+	"chinacpa/internal/netdiag"
 	"chinacpa/internal/pool"
 	"chinacpa/internal/pubmodel"
 	"chinacpa/internal/reqlog"
@@ -45,6 +48,7 @@ type Panel struct {
 
 	mu     sync.Mutex
 	tokens map[string]*loginTicket // 登录票据（轮询用）
+	bl     map[string]*browserLoginState
 
 	// 历史费用缓存：7/30 日全量扫描请求日志较贵，5 分钟复用
 	//（面板 25s 轮询与仪表板/用量页共用）
@@ -57,7 +61,7 @@ type Panel struct {
 }
 
 // histCosts 近 7/30 日折合成本：从持久化请求日志的 CostByModel 按当前价格现算
-//（JSONL 日汇总无模型明细，无法重算；改价后历史成本自动跟价）。
+// （JSONL 日汇总无模型明细，无法重算；改价后历史成本自动跟价）。
 func (p *Panel) histCosts() (float64, float64) {
 	p.histCostMu.Lock()
 	defer p.histCostMu.Unlock()
@@ -85,6 +89,27 @@ func (p *Panel) histCosts() (float64, float64) {
 	return p.histCostVal[0], p.histCostVal[1]
 }
 
+// browserLoginState 「窗口登录」进度（豆包兜底通道）。
+// 登录发生在用户自己的浏览器窗口里，可能持续几分钟，所以拆成 start + poll 两步，
+// 不让一个 HTTP 请求挂在那里等。
+type browserLoginState struct {
+	provider  string
+	status    string // running / success / failed
+	message   string
+	account   map[string]any
+	createdAt time.Time
+}
+
+// purgeBrowserLoginsLocked 清理过期进度（调用方持锁，30 分钟）。
+func (p *Panel) purgeBrowserLoginsLocked() {
+	for id, s := range p.bl {
+		if time.Since(s.createdAt) > 30*time.Minute {
+			delete(p.bl, id)
+		}
+	}
+}
+
+// loginTicket 一次登录会话的轮询状态。
 type loginTicket struct {
 	provider  string
 	session   *model.LoginSession
@@ -113,19 +138,25 @@ func New(cfg *config.Config, p *pool.Pool, st *store.Store, u *usage.Tracker, sc
 		pub:       pub,
 		rlog:      rl,
 		tokens:    map[string]*loginTicket{},
+		bl:        map[string]*browserLoginState{},
 		eventSubs: map[chan struct{}]struct{}{},
 	}
 }
 
-// Register 挂载全部路由（含网关）。
+// Register 挂载全部路由（含网关；gateway_enabled=false 时只挂面板与签到）。
 func (p *Panel) Register(mux *http.ServeMux, gw *gateway.Gateway) {
 	p.gw = gw
-	gw.Register(mux, p.cfg.APIKey)
+	if p.cfg.GatewayOn() {
+		gw.Register(mux, p.cfg.APIKey)
+	} else {
+		log.Printf("网关已关闭（gateway_enabled=false）：仅提供面板与签到，/v1 不挂载")
+	}
 
 	mux.HandleFunc("/", p.handleIndex)
 	mux.HandleFunc("/trae/callback", p.handleTraeCallback)
 	mux.HandleFunc("/authorize", p.handleTraeCallback)               // Trae 官方回调路径
 	mux.HandleFunc("/doubao/qrlogin", p.handleDoubaoQRPage)          // 豆包扫码页
+	mux.HandleFunc("/doubao/qrlogin/", p.handleDoubaoQRPage)         // 带斜杠也认（否则命中 "/" 变成 404）
 	mux.HandleFunc("/doubao/qrlogin/img", p.handleDoubaoQRImg)       // 二维码图片
 	mux.HandleFunc("/doubao/qrlogin/status", p.handleDoubaoQRStatus) // 扫码状态（驱动登录）
 	mux.HandleFunc("/api/auth", p.handleAuth)
@@ -135,9 +166,15 @@ func (p *Panel) Register(mux *http.ServeMux, gw *gateway.Gateway) {
 	mux.HandleFunc("/api/models", p.authed(p.handleModels))
 	mux.HandleFunc("/api/login/start", p.authed(p.handleLoginStart))
 	mux.HandleFunc("/api/login/poll", p.authed(p.handleLoginPoll))
+	mux.HandleFunc("/api/login/browser", p.authed(p.handleLoginBrowserStart))     // 豆包窗口登录（扫码兜底）
+	mux.HandleFunc("/api/login/browser_poll", p.authed(p.handleLoginBrowserPoll)) // 窗口登录进度
 	mux.HandleFunc("/api/import", p.authed(p.handleImport))
 	mux.HandleFunc("/api/usage", p.authed(p.handleUsage))
 	mux.HandleFunc("/api/checkin_all", p.authed(p.handleCheckinAll))
+	mux.HandleFunc("/api/checkin_history", p.authed(p.handleCheckinHistory))
+	mux.HandleFunc("/api/diag", p.authed(p.handleDiag))
+	mux.HandleFunc("/api/growth_tasks", p.authed(p.handleGrowthTasks))
+	mux.HandleFunc("/api/notify_test", p.authed(p.handleNotifyTest))
 	mux.HandleFunc("/api/refresh_all_quotas", p.authed(p.handleRefreshAllQuotas))
 	mux.HandleFunc("/api/publish", p.authed(p.handlePublish))
 	mux.HandleFunc("/api/settings", p.authed(p.handleSettings))
@@ -287,7 +324,7 @@ func (p *Panel) handleOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	accounts := p.pool.Accounts()
 	var views []acctView
-	var totalCredits, totalIdeCredits, totalQoderCredits, totalQwenWorkCredits float64
+	var totalCredits, totalIdeCredits, totalQoderCredits, totalQwenWorkCredits, totalMinimaxCredits float64
 	var qwenRemaining float64
 	providerCount := map[string]int{}
 	for _, a := range accounts {
@@ -369,6 +406,8 @@ func (p *Panel) handleOverview(w http.ResponseWriter, r *http.Request) {
 				totalQoderCredits += q.Remaining
 			case "qwenwork":
 				totalQwenWorkCredits += q.Remaining
+			case "minimax", "minimax-intl":
+				totalMinimaxCredits += q.Remaining
 			}
 		}
 		if ci, ok := p.st.TodayCheckin(a.Provider, a.UID); ok {
@@ -416,6 +455,13 @@ func (p *Panel) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"next_checkin":          p.nextCheckinUnix(),
 		"quota_refresh_minutes": p.cfg.Schedule.QuotaRefreshMinutes,
 		"token_refresh_hours":   p.cfg.Schedule.TokenRefreshHours,
+		// 自用多账号的关键参数：并发放开就是风控靶子，抖动去掉就是整点齐发
+		"checkin_concurrency":    p.cfg.Schedule.CheckinConcurrency,
+		"checkin_jitter_minutes": p.cfg.Schedule.CheckinJitterMinutes,
+		"checkin_deadline":       p.cfg.Schedule.CheckinDeadline,
+		"checkin_retry_minutes":  p.cfg.Schedule.CheckinRetryMinutes,
+		"notify_channels":        channelNames(p.sched),
+		"gateway_enabled":        p.cfg.GatewayOn(),
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"accounts":           views,
@@ -426,11 +472,13 @@ func (p *Panel) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"today_by_model":     today,
 		"usage_days":         usageDays,
 		"schedule":           schedule,
+		"checkin_status":     p.sched.Status(),
 		"total_credits":      totalCredits,
 		"total_ide_credits":  totalIdeCredits,
 		"qwen_remaining":     qwenRemaining,
 		"qoder_remaining":    totalQoderCredits,
 		"qwenwork_remaining": totalQwenWorkCredits,
+		"minimax_remaining":  totalMinimaxCredits,
 		"usd_cny":            p.usage.USDCNY(),
 		"gateway_url":        "/v1",
 		"listen":             p.cfg.Listen,
@@ -531,6 +579,32 @@ func (p *Panel) handleAccountAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "changed": changed, "expires_at": a.ExpiresAt})
+	case "tasks":
+		// 成长任务：报名 + 补进度 + 领奖。纯事件任务秒级完成，但专家类任务
+		// 每个都要一次真实对话（约 10~20 秒），一轮最长可能几分钟，
+		// 所以给 8 分钟，不占上面的 90 秒预算。
+		wb, ok := pr.(interface {
+			RunTasks(ctx context.Context, a *model.Account) (int64, string, error)
+		})
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "该平台没有成长任务体系"})
+			return
+		}
+		tctx, tcancel := context.WithTimeout(context.Background(), 8*time.Minute)
+		defer tcancel()
+		earned, summary, terr := wb.RunTasks(tctx, a)
+		if terr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "成长任务失败: " + terr.Error()})
+			return
+		}
+		go func() { // 积分变了，顺手刷一次额度
+			qctx, qcancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer qcancel()
+			if q, qerr := pr.Quota(qctx, a); qerr == nil {
+				p.st.SetQuota(q)
+			}
+		}()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "earned": earned, "summary": summary})
 	case "toggle":
 		newDisabled := !a.Disabled
 		if err := p.pool.SetDisabled(a.Provider, a.UID, newDisabled); err != nil {
@@ -555,14 +629,133 @@ func (p *Panel) handleCheckinAll(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST only"})
 		return
 	}
-	go func() {
-		for _, a := range p.pool.Accounts() {
-			if !a.Disabled {
-				p.sched.CheckinAccount(a)
-			}
+	// 每个账号各自发起，实际并发由调度器的全局闸门（checkin_concurrency）控制：
+	// 这里不再串行等待，否则 20 个账号要排 20×90s。
+	n := 0
+	for _, a := range p.pool.Accounts() {
+		if a.Disabled || a.NeedsRelogin {
+			continue
 		}
-	}()
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "已发起全账号签到"})
+		n++
+		go p.sched.CheckinAccount(a)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": n, "message": "已发起全账号签到"})
+}
+
+// handleNotifyTest 发一条测试推送，用于验证Webhook/Telegram/Server酱配置。
+// 一个人自用代签，通知链路出问题往往要到第二天才发现；这里给个十秒内能验证的入口。
+func (p *Panel) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST only"})
+		return
+	}
+	n := p.sched.Notifier()
+	if n == nil || !n.Enabled() {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": false,
+			"error": "通知还没配：config.json → notify 里设 enabled=true，并填任意一个渠道：" +
+				"wecom（企业微信群机器人）/ feishu（飞书）/ dingtalk（+dingtalk_secret 如需加签）/ " +
+				"bark（iPhone）/ webhook（任意接受 title+text 的接口）/ telegram_token+chat / serverchan。" +
+				"改完要重启进程才生效。",
+		})
+		return
+	}
+	now := time.Now()
+	title := "测试推送 " + now.Format("01-02 15:04") + " · 收到即通"
+	text := "这是 ChinaCPA 的测试消息，用来验证签到汇总能否送达。\n" +
+		"收到它说明渠道配置正确，真签到结束后会推送同样格式的一条。\n\n" +
+		"成功领取 2 · 今日已签 1 · 无签到体系 0 · 失败 1\n" +
+		"· workbuddy/主号：+120 签到成功\n" +
+		"· trae/小号：+80 签到成功\n" +
+		"· qoder/小号：今日已签\n\n" +
+		"失败明细：\n· doubao/备用：活动页未找到签到按钮"
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	if err := n.Send(ctx, title, text); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "channels": n.Channels(), "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "channels": n.Channels()})
+}
+
+// handleGrowthTasks 列出某账号的成长任务与进度（只读，不发行为事件）。
+func (p *Panel) handleGrowthTasks(w http.ResponseWriter, r *http.Request) {
+	provID := r.URL.Query().Get("provider")
+	uid := r.URL.Query().Get("uid")
+	var a *model.Account
+	for _, x := range p.pool.Accounts() {
+		if x.UID == uid && (provID == "" || x.Provider == provID) {
+			a = x
+			break
+		}
+	}
+	if a == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "账号不存在"})
+		return
+	}
+	pr, ok := p.pool.Provider(a.Provider)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "未知平台"})
+		return
+	}
+	gl, ok := pr.(interface {
+		GrowthTasks(ctx context.Context, a *model.Account) ([]model.GrowthTask, error)
+	})
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "该平台没有成长任务体系"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
+	defer cancel()
+	tasks, err := gl.GrowthTasks(ctx, a)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks, "provider": a.Provider, "uid": a.UID})
+}
+
+// handleDiag 站点链路自检：同一个请求分「直连 / 环境变量代理 / Windows 系统代理」
+// 各投一遍，把 DNS → TCP → TLS → HTTP 每一跳的结果摊开。
+// 只允许内置 provider（不接受任意 host，避免变成 SSRF 探针）。
+func (p *Panel) handleDiag(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("provider"))
+	if id == "" {
+		id = "doubao"
+	}
+	prov, ok := p.pool.Provider(id)
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"error": "未知平台: " + id})
+		return
+	}
+	d, ok := prov.(interface {
+		Diag(ctx context.Context) netdiag.Report
+	})
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"error": id + " 暂未提供链路诊断（目前只有豆包有）"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 75*time.Second)
+	defer cancel()
+	rep := d.Diag(ctx)
+	rep.Extra = append(rep.Extra, "诊断时间 "+time.Now().Format("01-02 15:04:05"))
+	writeJSON(w, http.StatusOK, rep)
+}
+
+// handleCheckinHistory 最近 N 天签到记录（默认 7 天，最多 30 天）。
+func (p *Panel) handleCheckinHistory(w http.ResponseWriter, r *http.Request) {
+	days := 7
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 30 {
+			days = n
+		}
+	}
+	recs := p.st.CheckinHistory(days)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"days":    days,
+		"records": recs,
+		"status":  p.sched.Status(),
+	})
 }
 
 func (p *Panel) handleRefreshAllQuotas(w http.ResponseWriter, r *http.Request) {
@@ -709,6 +902,134 @@ func (p *Panel) handleLoginPoll(w http.ResponseWriter, r *http.Request) {
 	t.done = res.Status != model.LoginPending
 	t.result = res
 	writeJSON(w, http.StatusOK, res)
+}
+
+// browserLoginProvider 实现「窗口登录」的 provider（目前只有豆包）。
+// 语义：起一个可见浏览器窗口让用户自己登录，返回可入库的凭证。
+type browserLoginProvider interface {
+	BrowserLogin(ctx context.Context, onState func(status, msg string)) (string, error)
+}
+
+// newTicketID 生成短随机 ID（登录票据用，不可预测即可）。
+func newTicketID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return hex.EncodeToString(b)
+}
+
+// handleLoginBrowserStart 启动「窗口登录」兜底通道。
+// 扫码接口改版/被拦时，这条路只依赖 doubao.com 本身：用户在一个普通浏览器窗口里
+// 自己登录，程序从浏览器 Cookie 库取回登录态。
+func (p *Panel) handleLoginBrowserStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST only"})
+		return
+	}
+	var body struct {
+		Provider string `json:"provider"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.Provider == "" {
+		body.Provider = "doubao"
+	}
+	pr, ok := p.pool.Provider(body.Provider)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "未知平台"})
+		return
+	}
+	bl, ok := pr.(browserLoginProvider)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "该平台不支持窗口登录，请用扫码或粘贴凭证"})
+		return
+	}
+
+	id := newTicketID()
+	p.mu.Lock()
+	p.purgeBrowserLoginsLocked()
+	// 同一平台同时只允许一个窗口登录：BrowserLogin 内部串行（一把 CDP 锁），
+	// 第二个请求会一直排队到第一个结束，界面上只会显示「正在启动浏览器…」，很误导。
+	for _, s := range p.bl {
+		if s.provider == body.Provider && s.status == "running" {
+			p.mu.Unlock()
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "已有一个登录窗口在进行中，请先在那个窗口完成登录或把它关掉"})
+			return
+		}
+	}
+	p.bl[id] = &browserLoginState{provider: body.Provider, status: "running", message: "正在启动浏览器…", createdAt: time.Now()}
+	p.mu.Unlock()
+
+	set := func(status, msg string, acc map[string]any) {
+		p.mu.Lock()
+		if cur, ok := p.bl[id]; ok {
+			cur.status, cur.message = status, msg
+			if acc != nil {
+				cur.account = acc
+			}
+		}
+		p.mu.Unlock()
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 9*time.Minute)
+		defer cancel()
+
+		cookie, err := bl.BrowserLogin(ctx, func(s, m string) {
+			if s == "success" {
+				return
+			}
+			set("running", m, nil)
+		})
+		if err != nil {
+			set("failed", err.Error(), nil)
+			return
+		}
+
+		set("running", "已取到登录态，正在校验…", nil)
+		ictx, icancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer icancel()
+		a, err := pr.ImportCredential(ictx, cookie)
+		if err != nil {
+			set("failed", "取到 Cookie 但校验失败："+err.Error(), nil)
+			return
+		}
+		if err := p.pool.AddAccount(a); err != nil {
+			set("failed", "账号保存失败："+err.Error(), nil)
+			return
+		}
+		go func() { p.sched.CheckinAccount(a) }()
+		log.Printf("PANEL: 新账号纳管 %s %s（窗口登录）", a.Provider, a.Nickname)
+		set("success", "接入成功", map[string]any{
+			"uid": a.UID, "nickname": a.Nickname, "provider": a.Provider,
+		})
+	}()
+
+	writeJSON(w, http.StatusOK, map[string]any{"id": id})
+}
+
+// handleLoginBrowserPoll 查询「窗口登录」进度。
+func (p *Panel) handleLoginBrowserPoll(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	p.mu.Lock()
+	s, ok := p.bl[id]
+	var (
+		status, msg string
+		acc         map[string]any
+	)
+	if ok {
+		status, msg, acc = s.status, s.message, s.account
+	}
+	p.mu.Unlock()
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "登录会话不存在或已过期"})
+		return
+	}
+	out := map[string]any{"status": status, "message": msg}
+	if acc != nil {
+		out["account"] = acc
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleTraeCallback Trae 登录回调（浏览器重定向，无需面板会话）。
@@ -886,7 +1207,7 @@ h3{margin:0 0 6px;font-size:17px}
 </style></head><body><div class="card">
 <h3>豆包扫码登录</h3>
 <p class="sub">打开豆包 App → 对话 → 右上角 ＋ → 扫一扫</p>
-<div class="qr"><img id="qr" src="/doubao/qrlogin/img?sid=__SID__" alt="二维码加载中…"></div>
+<div class="qr"><img id="qr" src="/doubao/qrlogin/img?sid=__SID__" alt="二维码加载中…" onerror="this.style.display='none';setSt('二维码已失效（服务可能重启过），请回面板重新发起登录','err')"></div>
 <p class="st" id="st">请使用豆包 App 扫描二维码</p>
 <p class="tip">手机确认后自动纳管账号，本页可关闭</p>
 </div>
@@ -914,6 +1235,13 @@ tick();
 
 // ── 凭证导入 ─────────────────────────────────────────────
 
+// supportsLocalCredential 该平台是否支持「凭证留空 = 读本机登录态」。
+// 目前只有 MiniMax：它由 MiniMax Code 客户端在本机落一套 OAuth 登录态，
+// 直接读比让用户抠 token 更省事。
+func supportsLocalCredential(provider string) bool {
+	return provider == "minimax" || provider == "minimax-intl"
+}
+
 func (p *Panel) handleImport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST only"})
@@ -923,8 +1251,14 @@ func (p *Panel) handleImport(w http.ResponseWriter, r *http.Request) {
 		Provider   string `json:"provider"`
 		Credential string `json:"credential"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Credential == "" {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Provider == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "参数错误"})
+		return
+	}
+	// MiniMax 允许留空：表示直接读取本机 MiniMax Code 的登录态（~/.minimax/auth）。
+	// 其余平台必须粘贴凭证，否则无从建立会话。
+	if strings.TrimSpace(body.Credential) == "" && !supportsLocalCredential(body.Provider) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "参数错误：请粘贴凭证"})
 		return
 	}
 	pr, ok := p.pool.Provider(body.Provider)
@@ -1165,6 +1499,17 @@ func (p *Panel) handleRequests(w http.ResponseWriter, r *http.Request) {
 }
 
 // ── 工具 ─────────────────────────────────────────────────
+
+// channelNames 已配置的通知渠道（面板展示「签到结果推到哪」）。
+func channelNames(s *scheduler.Scheduler) []string {
+	if s == nil {
+		return nil
+	}
+	if n := s.Notifier(); n != nil {
+		return n.Channels()
+	}
+	return nil
+}
 
 func writeJSON(w http.ResponseWriter, status int, obj any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

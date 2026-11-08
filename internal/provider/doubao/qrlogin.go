@@ -18,6 +18,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -57,21 +58,24 @@ type qrSession struct {
 
 // qrGet 带会话 Cookie 的 GET（不自动跟随重定向，返回状态码/响应体/Location）。
 func (p *Provider) qrGet(ctx context.Context, u string, sess *qrSession, withCSRF bool) (int, []byte, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return 0, nil, "", err
+	mk := func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", dbUserAgent)
+		req.Header.Set("Accept", "application/json, text/plain, */*")
+		req.Header.Set("Referer", dbOrigin+"/chat/login")
+		req.Header.Set("Origin", dbOrigin)
+		if ck := serializeCookies(sess.cookies); ck != "" {
+			req.Header.Set("Cookie", ck)
+		}
+		if withCSRF && sess.csrf != "" {
+			req.Header.Set("x-tt-passport-csrf-token", sess.csrf)
+		}
+		return req, nil
 	}
-	req.Header.Set("User-Agent", dbUserAgent)
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("Referer", dbOrigin+"/chat/login")
-	req.Header.Set("Origin", dbOrigin)
-	if ck := serializeCookies(sess.cookies); ck != "" {
-		req.Header.Set("Cookie", ck)
-	}
-	if withCSRF && sess.csrf != "" {
-		req.Header.Set("x-tt-passport-csrf-token", sess.csrf)
-	}
-	resp, err := p.http.Do(req)
+	resp, err := p.do(mk)
 	if err != nil {
 		return 0, nil, "", err
 	}
@@ -150,15 +154,63 @@ func genWebID() string { return "76" + randomDigits(17) }
 
 // ── StartLogin / PollLogin ───────────────────────────────
 
+// qrStartAttempts 扫码发起的总尝试次数（含首次）。
+// 字节 passport 的 get_qrcode 偶发 404/5xx（边缘节点抖动或短时风控），
+// 单次失败就报错会让用户以为「豆包坏了」，重试一次通常就通。
+const qrStartAttempts = 3
+
+// qrStartError 扫码发起失败：retry 标记该错误是否值得换新会话重试。
+type qrStartError struct {
+	msg   string
+	retry bool
+}
+
+func (e *qrStartError) Error() string { return e.msg }
+
+// cookieFallbackHint 扫码通道不可用时的替代路径（用户不需要读源码也能自救）。
+const cookieFallbackHint = "（扫码通道被上游拒绝时，可改用「粘贴 Cookie」导入：登录 www.doubao.com → F12 → Network → 任一请求 → 复制完整 Cookie）"
+
 // StartLogin 发起扫码登录：取 CSRF + 二维码，返回扫码页地址（面板展示给用户打开）。
 func (p *Provider) StartLogin(ctx context.Context, callbackBase string) (*model.LoginSession, error) {
+	var lastErr error
+	for attempt := 0; attempt < qrStartAttempts; attempt++ {
+		if attempt > 0 {
+			// 线性退避：400ms / 800ms，足够躲过边缘节点的瞬时拒绝
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt) * 400 * time.Millisecond):
+			}
+		}
+		sess, err := p.newQRSession(ctx)
+		if err != nil {
+			lastErr = err
+			var qe *qrStartError
+			if errors.As(err, &qe) && !qe.retry {
+				return nil, err
+			}
+			continue
+		}
+		p.registerQRSession(sess)
+		page := strings.TrimSuffix(callbackBase, "") + "/doubao/qrlogin?sid=" + url.QueryEscape(sess.id)
+		return &model.LoginSession{Provider: p.ID(), ID: sess.id, URL: page}, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("获取二维码失败，请重试")
+	}
+	return nil, lastErr
+}
+
+// newQRSession 建一个全新会话并走完 ① 基础 Cookie ② CSRF ③ 二维码。
+// 失败时按「是否值得重试」分类，避免把解析错误也重试三遍。
+func (p *Provider) newQRSession(ctx context.Context) (*qrSession, error) {
 	sess := &qrSession{
 		id: newUUID(), cookies: map[string]string{},
 		state: qrInit, createdAt: time.Now(),
 	}
 	// ① 基础 Cookie
 	if _, _, _, err := p.qrGet(ctx, dbOrigin+"/", sess, false); err != nil {
-		return nil, fmt.Errorf("访问豆包首页失败: %w", err)
+		return nil, &qrStartError{msg: "访问豆包首页失败: " + err.Error(), retry: true}
 	}
 	// ② passport_csrf_token（Cookie 优先，缺则请求签发接口）
 	csrf := pick(sess.cookies["passport_csrf_token"], sess.cookies["passport_csrf_token_default"])
@@ -177,18 +229,24 @@ func (p *Provider) StartLogin(ctx context.Context, callbackBase string) (*model.
 		csrf = pick(csrf, sess.cookies["passport_csrf_token"], sess.cookies["passport_csrf_token_default"])
 	}
 	if csrf == "" {
-		return nil, fmt.Errorf("获取 passport_csrf_token 失败（上游风控？稍后重试）")
+		return nil, &qrStartError{msg: "获取 passport_csrf_token 失败（上游风控或网络异常），请稍后重试", retry: true}
 	}
 	sess.csrf = csrf
+
 	// ③ 二维码
 	next := url.QueryEscape(dbOrigin)
 	qrURL := dbOrigin + "/passport/web/get_qrcode/?next=" + next + "&aid=" + dbAid
 	status, body, _, err := p.qrGet(ctx, qrURL, sess, true)
 	if err != nil {
-		return nil, fmt.Errorf("获取二维码失败: %w", err)
+		return nil, &qrStartError{msg: "获取二维码失败: " + err.Error(), retry: true}
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("获取二维码失败 HTTP %d: %s", status, truncateRunes(string(body), 160))
+		// 404 是实测最常见的一种：本地网络/代理把请求投到了错误节点，
+		// 或 passport 对该出口 IP 短时拒绝。换新会话重试通常能过。
+		return nil, &qrStartError{
+			msg:   fmt.Sprintf("获取二维码失败 HTTP %d: %s%s", status, truncateRunes(string(body), 160), cookieFallbackHint),
+			retry: true,
+		}
 	}
 	var qrResp struct {
 		Data struct {
@@ -199,18 +257,25 @@ func (p *Provider) StartLogin(ctx context.Context, callbackBase string) (*model.
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &qrResp); err != nil {
-		return nil, fmt.Errorf("二维码响应解析失败: %v", err)
+		return nil, &qrStartError{msg: "二维码响应解析失败: " + err.Error()}
 	}
 	if qrResp.Data.Token == "" || qrResp.Data.ErrorCode != 0 {
-		return nil, fmt.Errorf("获取二维码失败: %s", pick(qrResp.Data.Message, "上游未返回 token"))
+		return nil, &qrStartError{
+			msg:   "获取二维码失败: " + pick(qrResp.Data.Message, "上游未返回 token"),
+			retry: true,
+		}
 	}
 	sess.token = qrResp.Data.Token
 	png, remote, derr := decodeQRField(qrResp.Data.QRCode)
 	if derr != nil {
-		return nil, derr
+		return nil, &qrStartError{msg: derr.Error()}
 	}
 	sess.qrPNG, sess.qrRemote = png, remote
+	return sess, nil
+}
 
+// registerQRSession 存会话并清理 30 分钟前的旧会话。
+func (p *Provider) registerQRSession(sess *qrSession) {
 	p.qrMu.Lock()
 	// 顺带清理 30 分钟前的旧会话
 	cutoff := time.Now().Add(-30 * time.Minute)
@@ -221,9 +286,6 @@ func (p *Provider) StartLogin(ctx context.Context, callbackBase string) (*model.
 	}
 	p.qrSessions[sess.id] = sess
 	p.qrMu.Unlock()
-
-	page := strings.TrimSuffix(callbackBase, "") + "/doubao/qrlogin?sid=" + url.QueryEscape(sess.id)
-	return &model.LoginSession{Provider: p.ID(), ID: sess.id, URL: page}, nil
 }
 
 // decodeQRField 二维码字段三形态：data: URI / http URL / 裸 base64 PNG。
